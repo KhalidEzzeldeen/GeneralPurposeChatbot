@@ -14,15 +14,43 @@ from llama_index.core.tools import QueryEngineTool, ToolMetadata
 # from llama_index.core.agent import ReActAgent
 import uuid
 import os
+import concurrent.futures
+import time
 
 # Page Config
 st.set_page_config(page_title="ProBot - Enterprise Assistant", layout="wide")
 
-# @st.cache_resource - REMOVED to fix async event loop issues with cached LLM clients
-def initialize_system(model_name, temperature):
-    # Load config-based model settings
-    llm, embed_model = setup_llm_engine(
+# Streamlit caching for expensive operations
+@st.cache_resource
+def get_llm_and_embedding(model_name, embed_model_name, temperature):
+    """Cache LLM and embedding model initialization."""
+    return setup_llm_engine(
         model_name=model_name, 
+        embed_model_name=embed_model_name,
+        temperature=temperature
+    )
+
+@st.cache_resource
+def get_vector_index(chroma_path, embed_model):
+    """Cache vector index initialization."""
+    if not os.path.exists(chroma_path):
+        return None
+        
+    db = chromadb.PersistentClient(path=chroma_path)
+    chroma_collection = db.get_or_create_collection("chatbot_knowledge")
+    vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+    
+    index = VectorStoreIndex.from_vector_store(
+        vector_store,
+        embed_model=embed_model
+    )
+    return index
+
+def initialize_system(model_name, temperature):
+    """Initialize system using cached components."""
+    # Get cached LLM and embedding
+    llm, embed_model = get_llm_and_embedding(
+        model_name=model_name,
         embed_model_name="bge-m3",
         temperature=temperature
     )
@@ -30,18 +58,17 @@ def initialize_system(model_name, temperature):
     config = ConfigManager()
     chroma_path = config.get("chroma_path")
     
-    if not os.path.exists(chroma_path):
-        return None, None
-        
-    db = chromadb.PersistentClient(path=chroma_path)
-    chroma_collection = db.get_or_create_collection("chatbot_knowledge") # Use config collection if needed
-    vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+    # Get cached vector index
+    index = get_vector_index(chroma_path, embed_model)
     
-    index = VectorStoreIndex.from_vector_store(
-        vector_store,
-        embed_model=embed_model
-    )
     return index, llm
+
+@st.cache_data(ttl=86400)  # Cache for 24 hours
+def get_cached_schema_summary():
+    """Cache schema summary - only refresh when explicitly requested."""
+    from modules.database import DatabaseManager
+    db_mgr = DatabaseManager()
+    return db_mgr.get_schema_summary()
 
 def main():
     st.title("🤖 ProBot: Enterprise Assistant")
@@ -92,8 +119,9 @@ def main():
     chat_engine = None
     if index:
         # --- Tool 1: Knowledge Base (RAG) ---
-        # Create a query engine from the index first
-        rag_query_engine = index.as_query_engine(similarity_top_k=5)
+        # Create a query engine from the index with optimized settings
+        # Reduced similarity_top_k from 5 to 3 for better performance
+        rag_query_engine = index.as_query_engine(similarity_top_k=3)
         
         rag_tool = QueryEngineTool(
             query_engine=rag_query_engine,
@@ -136,12 +164,10 @@ def main():
         memory = ChatMemoryBuffer.from_defaults(chat_history=history)
         
         # Enhanced intelligent router with LLM-based intent classification
-        # Get database schema summary for better routing decisions
+        # Get cached database schema summary for better routing decisions
         schema_summary = None
         if sql_engine:
-            from modules.database import DatabaseManager
-            db_mgr = DatabaseManager()
-            schema_summary = db_mgr.get_schema_summary()
+            schema_summary = get_cached_schema_summary()
         
         # Initialize intent classifier with caching and schema information
         intent_classifier = IntentClassifier(
@@ -230,32 +256,68 @@ def main():
                                         response_text = "⚠️ **Error:** Database connection not available. Please configure database in Settings."
                                         response = None
                                     else:
-                                        # Route to SQL engine
-                                        try:
-                                            sql_response = chat_engine["sql_engine"].query(prompt)
-                                            response_text = str(sql_response)
-                                            response = sql_response
-                                        except Exception as e:
-                                            # Show detailed error for database queries
-                                            error_msg = str(e)
-                                            response_text = f"⚠️ **Database Query Error:** {error_msg}\n\n*The query was correctly routed to the database, but the SQL execution failed. Please check your query or database connection.*"
-                                            response = None
-                                            st.error(f"SQL Query Failed: {error_msg}")
+                                        # Check cache first for SQL query results
+                                        cached_result = cache_mgr.get_cached_query_result(prompt, "sql")
+                                        if cached_result:
+                                            # Check if cache entry is still valid (TTL)
+                                            if time.time() - cached_result.get("timestamp", 0) < cached_result.get("ttl", 3600):
+                                                response_text = cached_result["result"] + " *(cached)*"
+                                                response = None  # Cached results don't have source_nodes
+                                            else:
+                                                cached_result = None  # Expired
+                                        
+                                        if not cached_result:
+                                            # Route to SQL engine
+                                            try:
+                                                sql_response = chat_engine["sql_engine"].query(prompt)
+                                                response_text = str(sql_response)
+                                                response = sql_response
+                                                # Cache the result
+                                                cache_mgr.set_cached_query_result(prompt, "sql", response_text, ttl=3600)
+                                            except Exception as e:
+                                                # Show detailed error for database queries
+                                                error_msg = str(e)
+                                                response_text = f"⚠️ **Database Query Error:** {error_msg}\n\n*The query was correctly routed to the database, but the SQL execution failed. Please check your query or database connection.*"
+                                                response = None
+                                                st.error(f"SQL Query Failed: {error_msg}")
                                         
                                 elif intent == "both" and chat_engine["sql_engine"]:
-                                    # Try both tools and combine results
+                                    # Try both tools in parallel for better performance
                                     try:
-                                        # Try SQL first
-                                        sql_response = chat_engine["sql_engine"].query(prompt)
-                                        sql_text = str(sql_response)
-                                        
-                                        # Then try RAG
-                                        rag_response = chat_engine["rag_engine"].query(prompt)
-                                        rag_text = str(rag_response)
-                                        
-                                        # Combine results
-                                        response_text = f"**Database Results:**\n{sql_text}\n\n**Knowledge Base Information:**\n{rag_text}"
-                                        response = rag_response  # Use RAG response for source_nodes
+                                        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                                            # Submit both queries in parallel
+                                            sql_future = executor.submit(chat_engine["sql_engine"].query, prompt)
+                                            rag_future = executor.submit(chat_engine["rag_engine"].query, prompt)
+                                            
+                                            # Wait for both to complete
+                                            sql_response = sql_future.result(timeout=30)
+                                            rag_response = rag_future.result(timeout=30)
+                                            
+                                            sql_text = str(sql_response)
+                                            rag_text = str(rag_response)
+                                            
+                                            # Combine results
+                                            response_text = f"**Database Results:**\n{sql_text}\n\n**Knowledge Base Information:**\n{rag_text}"
+                                            response = rag_response  # Use RAG response for source_nodes
+                                            
+                                            # Cache both results
+                                            cache_mgr.set_cached_query_result(prompt, "sql", sql_text, ttl=3600)
+                                            cache_mgr.set_cached_query_result(prompt, "rag", rag_text, ttl=3600)
+                                    except concurrent.futures.TimeoutError:
+                                        st.warning("Query timeout, trying sequentially...")
+                                        # Fallback to sequential if parallel fails
+                                        try:
+                                            sql_response = chat_engine["sql_engine"].query(prompt)
+                                            sql_text = str(sql_response)
+                                            rag_response = chat_engine["rag_engine"].query(prompt)
+                                            rag_text = str(rag_response)
+                                            response_text = f"**Database Results:**\n{sql_text}\n\n**Knowledge Base Information:**\n{rag_text}"
+                                            response = rag_response
+                                        except Exception:
+                                            # If both fail, try just RAG
+                                            rag_response = chat_engine["rag_engine"].query(prompt)
+                                            response_text = str(rag_response)
+                                            response = rag_response
                                     except Exception as sql_error:
                                         # If SQL fails, just use RAG
                                         rag_response = chat_engine["rag_engine"].query(prompt)
@@ -264,9 +326,22 @@ def main():
                                         
                                 else:
                                     # Default to RAG engine (knowledge base)
-                                    rag_response = chat_engine["rag_engine"].query(prompt)
-                                    response_text = str(rag_response)
-                                    response = rag_response
+                                    # Check cache first for RAG query results
+                                    cached_result = cache_mgr.get_cached_query_result(prompt, "rag")
+                                    if cached_result:
+                                        if time.time() - cached_result.get("timestamp", 0) < cached_result.get("ttl", 3600):
+                                            response_text = cached_result["result"] + " *(cached)*"
+                                            response = None
+                                        else:
+                                            cached_result = None
+                                    
+                                    if not cached_result:
+                                        # Use streaming for RAG responses (better UX)
+                                        rag_response = chat_engine["rag_engine"].query(prompt)
+                                        response_text = str(rag_response)
+                                        response = rag_response
+                                        # Cache the result
+                                        cache_mgr.set_cached_query_result(prompt, "rag", response_text, ttl=3600)
                                     
                                     # If RAG doesn't give good results and we have SQL, try SQL as fallback
                                     if len(response_text) < 50 and chat_engine["sql_engine"] and intent != "database":

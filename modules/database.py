@@ -1,13 +1,38 @@
 from sqlalchemy import create_engine, inspect
 import pandas as pd
 import os
+import threading
 from modules.config import ConfigManager
 from modules.knowledge_base import KnowledgeBase
 
 class DatabaseManager:
+    _engine_cache = {}
+    _lock = threading.Lock()
+    
     def __init__(self):
         self.config = ConfigManager()
         self.kb = KnowledgeBase()
+    
+    def get_engine(self):
+        """Get or create database engine with connection pooling."""
+        uri = self.get_connection_string()
+        if not uri:
+            return None
+        
+        # Use URI as cache key
+        if uri not in self._engine_cache:
+            with self._lock:
+                if uri not in self._engine_cache:
+                    # Create engine with connection pooling
+                    self._engine_cache[uri] = create_engine(
+                        uri,
+                        pool_size=5,  # Number of connections to maintain
+                        max_overflow=10,  # Additional connections beyond pool_size
+                        pool_pre_ping=True,  # Verify connections before using
+                        pool_recycle=3600,  # Recycle connections after 1 hour
+                        echo=False  # Set to True for SQL query logging
+                    )
+        return self._engine_cache[uri]
         
     def get_connection_string(self):
         db_conf = self.config.get("database")
@@ -35,11 +60,11 @@ class DatabaseManager:
         return base_uri
 
     def test_connection(self):
-        uri = self.get_connection_string()
-        if not uri:
-            return False, "Invalid Configuration"
+        """Test database connection using pooled engine."""
         try:
-            engine = create_engine(uri)
+            engine = self.get_engine()
+            if not engine:
+                return False, "Invalid Configuration"
             conn = engine.connect()
             conn.close()
             return True, "Connection Successful"
@@ -47,12 +72,11 @@ class DatabaseManager:
             return False, str(e)
 
     def scan_schema(self):
-        uri = self.get_connection_string()
-        if not uri:
-            return "Invalid Configuration"
-            
+        """Scan database schema using pooled engine."""
         try:
-            engine = create_engine(uri)
+            engine = self.get_engine()
+            if not engine:
+                return "Invalid Configuration"
             inspector = inspect(engine)
             
             summary = []
@@ -102,13 +126,12 @@ class DatabaseManager:
         Get a comprehensive summary of database schema including tables, columns, and sample data.
         This helps the LLM understand what data is available in the database for intelligent routing.
         Returns None if schema cannot be retrieved.
+        Uses connection pooling for better performance.
         """
-        uri = self.get_connection_string()
-        if not uri:
-            return None
-            
         try:
-            engine = create_engine(uri)
+            engine = self.get_engine()
+            if not engine:
+                return None
             inspector = inspect(engine)
             table_names = inspector.get_table_names()
             
@@ -197,16 +220,15 @@ class DatabaseManager:
     def get_sql_query_engine(self, llm):
         """
         Creates a NLSQLTableQueryEngine for natural language to SQL translation.
+        Uses connection pooling for better performance.
         """
         from llama_index.core import SQLDatabase
         from llama_index.core.query_engine import NLSQLTableQueryEngine
         
-        uri = self.get_connection_string()
-        if not uri:
-            return None
-            
         try:
-            engine = create_engine(uri)
+            engine = self.get_engine()
+            if not engine:
+                return None
             # Inspect all tables to give LLM full context
             inspector = inspect(engine)
             table_names = inspector.get_table_names()

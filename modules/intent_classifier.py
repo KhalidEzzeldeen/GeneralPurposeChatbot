@@ -79,10 +79,19 @@ Respond with ONLY a JSON object in this exact format:
         Returns:
             dict with keys: intent (IntentType), confidence (float), reasoning (str)
         """
-        # Check cache first
+        # Aggressive caching: Check cache first (including similar queries)
         if self.cache_manager:
+            # Check exact match
             cached_intent = self.cache_manager.get_cached_intent(query)
             if cached_intent:
+                return cached_intent
+            
+            # Check for similar queries (normalized)
+            normalized_query = query.lower().strip()
+            cached_intent = self.cache_manager.get_cached_intent(normalized_query)
+            if cached_intent:
+                # Cache the normalized version for future use
+                self.cache_manager.set_cached_intent(query, cached_intent)
                 return cached_intent
         
         # Build schema context if available

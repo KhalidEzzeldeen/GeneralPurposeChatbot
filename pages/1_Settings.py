@@ -122,4 +122,6 @@ with tab3:
                 st.error(result)
             else:
                 st.success(result)
+                # Clear caches to force refresh
                 st.cache_resource.clear()
+                st.cache_data.clear()  # Clear schema summary cache
