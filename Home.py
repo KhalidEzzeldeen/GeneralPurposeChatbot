@@ -71,6 +71,15 @@ def get_cached_schema_summary():
     db_mgr = DatabaseManager()
     return db_mgr.get_schema_summary()
 
+@st.cache_resource
+def get_sql_query_engine(_llm):
+    """Cache SQL query engine initialization."""
+    from modules.database import DatabaseManager
+    db_mgr = DatabaseManager()
+    if not db_mgr.get_connection_string():
+        return None
+    return db_mgr.get_sql_query_engine(_llm)
+
 def main():
     st.title("🤖 ProBot: Enterprise Assistant")
     
@@ -110,11 +119,21 @@ def main():
         else:
             st.session_state.messages = [{"role": "assistant", "content": "Hello! How can I help you with your enterprise data today?"}]
 
-    # Load resources
-    index, llm = initialize_system(
-        model_name=llm_conf["model_name"], 
-        temperature=llm_conf["temperature"]
-    )
+    # Load resources - cached, so first load is slow but subsequent loads are fast
+    # Only show spinner if we're actually loading (not from cache)
+    if 'system_initialized' not in st.session_state:
+        with st.spinner("🔄 Initializing system (first time may take a moment)..."):
+            index, llm = initialize_system(
+                model_name=llm_conf["model_name"], 
+                temperature=llm_conf["temperature"]
+            )
+            st.session_state.system_initialized = True
+    else:
+        # Subsequent loads should be fast due to caching
+        index, llm = initialize_system(
+            model_name=llm_conf["model_name"], 
+            temperature=llm_conf["temperature"]
+        )
     
     if index is None:
         st.warning("⚠️ Knowledge Base not found! Please upload files in 'Settings'.")
@@ -123,7 +142,7 @@ def main():
         # Let's allowing falling back to pure LLM if index missing is often better, 
         # BUT for RAG bot, let's keep it strict or just show warning.
     
-    # Init Engine
+    # Init Engine - Lazy loading for database components
     chat_engine = None
     if index:
         # --- Tool 1: Knowledge Base (RAG) ---
@@ -144,10 +163,14 @@ def main():
         
         tools = [rag_tool]
         
-        # --- Tool 2: Database (SQL) ---
-        from modules.database import DatabaseManager
-        db_mgr = DatabaseManager()
-        sql_engine = db_mgr.get_sql_query_engine(llm)
+        # --- Tool 2: Database (SQL) - Cached and lazy loaded ---
+        sql_engine = None
+        try:
+            # Use cached SQL query engine
+            sql_engine = get_sql_query_engine(llm)
+        except Exception:
+            # Silently fail - database might not be configured
+            sql_engine = None
         
         if sql_engine:
             sql_tool = QueryEngineTool(
@@ -172,10 +195,16 @@ def main():
         memory = ChatMemoryBuffer.from_defaults(chat_history=history)
         
         # Enhanced intelligent router with LLM-based intent classification
-        # Get cached database schema summary for better routing decisions
+        # Get cached database schema summary for better routing decisions (lazy load, only when SQL engine exists)
         schema_summary = None
         if sql_engine:
-            schema_summary = get_cached_schema_summary()
+            try:
+                # Only load schema summary if SQL engine is available
+                # This is cached, so subsequent calls are fast
+                schema_summary = get_cached_schema_summary()
+            except Exception:
+                # If schema loading fails, continue without it
+                schema_summary = None
         
         # Initialize intent classifier with caching and schema information
         intent_classifier = IntentClassifier(
