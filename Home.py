@@ -6,19 +6,14 @@ from modules.llm_engine import setup_llm_engine
 from modules.session import SessionManager
 from modules.cache import CacheManager
 from modules.config import ConfigManager
+from modules.intent_classifier import IntentClassifier, classify_with_keywords
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.llms import ChatMessage
 from llama_index.core.tools import QueryEngineTool, ToolMetadata
-# ReActAgent removed - using simple synchronous router instead to avoid async workflow issues
+# ReActAgent removed - using enhanced LLM-based router instead to avoid async workflow issues
 # from llama_index.core.agent import ReActAgent
-import asyncio
 import uuid
-import nest_asyncio
 import os
-import threading
-import concurrent.futures
-
-nest_asyncio.apply()
 
 # Page Config
 st.set_page_config(page_title="ProBot - Enterprise Assistant", layout="wide")
@@ -140,15 +135,18 @@ def main():
         ]
         memory = ChatMemoryBuffer.from_defaults(chat_history=history)
         
-        # Use a simple synchronous router instead of ReActAgent to avoid async workflow issues
-        # This manually routes between tools based on query analysis
+        # Enhanced intelligent router with LLM-based intent classification
+        # Initialize intent classifier with caching
+        intent_classifier = IntentClassifier(llm=llm, cache_manager=cache_mgr)
+        
         chat_engine = {
-            "type": "simple_router",
+            "type": "enhanced_router",
             "llm": llm,
             "rag_engine": rag_query_engine,
             "sql_engine": sql_engine if sql_engine else None,
             "memory": memory,
-            "system_prompt": llm_conf["system_prompt"]
+            "system_prompt": llm_conf["system_prompt"],
+            "intent_classifier": intent_classifier
         }
 
     # Display Chat
@@ -186,45 +184,88 @@ def main():
                         response = None
                         response_text = ""
                         try:
-                            # Use simple synchronous router that avoids async workflows entirely
-                            if isinstance(chat_engine, dict) and chat_engine.get("type") == "simple_router":
-                                # Simple intelligent routing: check if query needs database or RAG
-                                query_lower = prompt.lower()
+                            # Enhanced intelligent routing with LLM-based intent classification
+                            if isinstance(chat_engine, dict) and chat_engine.get("type") in ["enhanced_router", "simple_router"]:
+                                # Get conversation history for context
+                                conversation_history = st.session_state.messages[-10:] if len(st.session_state.messages) > 10 else st.session_state.messages
                                 
-                                # Keywords that suggest database queries
-                                db_keywords = ["how many", "count", "list", "sum", "total", "database", "table", "rows", "records", "users", "from database"]
-                                needs_db = any(keyword in query_lower for keyword in db_keywords) and chat_engine["sql_engine"]
+                                # Try LLM-based classification first (if enhanced_router)
+                                intent_classification = None
+                                if chat_engine.get("type") == "enhanced_router" and chat_engine.get("intent_classifier"):
+                                    try:
+                                        intent_classification = chat_engine["intent_classifier"].classify(
+                                            query=prompt,
+                                            conversation_history=conversation_history
+                                        )
+                                    except Exception as e:
+                                        # If LLM classification fails, fall back to keyword-based
+                                        st.warning(f"Intent classification failed, using keyword fallback: {str(e)}")
+                                        intent_classification = None
                                 
-                                if needs_db:
+                                # Fallback to keyword-based if LLM classification failed or not available
+                                if not intent_classification:
+                                    intent_classification = classify_with_keywords(prompt)
+                                
+                                intent = intent_classification.get("intent", "knowledge_base")
+                                confidence = intent_classification.get("confidence", 0.5)
+                                reasoning = intent_classification.get("reasoning", "")
+                                
+                                # Show routing info in debug mode (optional - can be removed in production)
+                                if confidence < 0.7:
+                                    st.info(f"🔀 Routing: {intent} (confidence: {confidence:.2f})")
+                                
+                                # Route based on intent
+                                if intent == "database" and chat_engine["sql_engine"]:
                                     # Route to SQL engine
                                     try:
                                         sql_response = chat_engine["sql_engine"].query(prompt)
                                         response_text = str(sql_response)
-                                        response = sql_response  # Keep for potential source_nodes
+                                        response = sql_response
                                     except Exception as e:
                                         # Fallback to RAG if SQL fails
                                         st.warning("Database query failed, using knowledge base...")
                                         rag_response = chat_engine["rag_engine"].query(prompt)
                                         response_text = str(rag_response)
                                         response = rag_response
+                                        
+                                elif intent == "both" and chat_engine["sql_engine"]:
+                                    # Try both tools and combine results
+                                    try:
+                                        # Try SQL first
+                                        sql_response = chat_engine["sql_engine"].query(prompt)
+                                        sql_text = str(sql_response)
+                                        
+                                        # Then try RAG
+                                        rag_response = chat_engine["rag_engine"].query(prompt)
+                                        rag_text = str(rag_response)
+                                        
+                                        # Combine results
+                                        response_text = f"**Database Results:**\n{sql_text}\n\n**Knowledge Base Information:**\n{rag_text}"
+                                        response = rag_response  # Use RAG response for source_nodes
+                                    except Exception as sql_error:
+                                        # If SQL fails, just use RAG
+                                        rag_response = chat_engine["rag_engine"].query(prompt)
+                                        response_text = str(rag_response)
+                                        response = rag_response
+                                        
                                 else:
-                                    # Route to RAG engine (knowledge base)
+                                    # Default to RAG engine (knowledge base)
                                     rag_response = chat_engine["rag_engine"].query(prompt)
                                     response_text = str(rag_response)
                                     response = rag_response
                                     
                                     # If RAG doesn't give good results and we have SQL, try SQL as fallback
-                                    if len(response_text) < 50 and chat_engine["sql_engine"]:
+                                    if len(response_text) < 50 and chat_engine["sql_engine"] and intent != "database":
                                         try:
                                             sql_response = chat_engine["sql_engine"].query(prompt)
                                             if sql_response and len(str(sql_response)) > len(response_text):
-                                                response_text = str(sql_response)
+                                                response_text = f"**Database Result:**\n{str(sql_response)}"
                                                 response = sql_response
                                         except:
                                             pass  # Keep RAG response
+                                    
                             else:
-                                # Fallback: If chat_engine is not a dict (old ReActAgent code path)
-                                # This should not happen with the new simple_router approach
+                                # Fallback: If chat_engine is not recognized
                                 response_text = "⚠️ **Error:** Unknown chat engine type. Please refresh the page."
                                 response = None
                         except (RuntimeError, Exception) as e:

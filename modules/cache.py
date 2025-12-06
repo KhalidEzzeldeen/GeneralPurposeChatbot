@@ -48,3 +48,19 @@ class CacheManager:
         data[key] = content
         with open(CACHE_FILE, 'w') as f:
             json.dump(data, f)
+    
+    def get_cached_intent(self, query):
+        """Get cached intent classification for a query."""
+        key = self._get_key(query, "intent")
+        with open(CACHE_FILE, 'r') as f:
+            data = json.load(f)
+        return data.get(key)
+    
+    def set_cached_intent(self, query, intent_data):
+        """Cache intent classification for a query."""
+        key = self._get_key(query, "intent")
+        with open(CACHE_FILE, 'r') as f:
+            data = json.load(f)
+        data[key] = intent_data
+        with open(CACHE_FILE, 'w') as f:
+            json.dump(data, f)

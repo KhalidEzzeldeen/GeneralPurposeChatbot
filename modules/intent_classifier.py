@@ -1,0 +1,208 @@
+"""
+LLM-based Intent Classifier for Enhanced Routing
+
+This module provides intelligent query intent classification to route queries
+between knowledge base (RAG) and database (SQL) tools.
+"""
+
+from llama_index.core.llms import ChatMessage
+from typing import Literal, Optional
+import json
+
+IntentType = Literal["knowledge_base", "database", "both", "unknown"]
+
+
+class IntentClassifier:
+    """
+    Classifies user queries to determine which tool(s) should be used.
+    Uses LLM for intelligent classification with caching support.
+    """
+    
+    def __init__(self, llm, cache_manager=None):
+        """
+        Initialize the intent classifier.
+        
+        Args:
+            llm: The LLM instance to use for classification
+            cache_manager: Optional CacheManager instance for caching intent classifications
+        """
+        self.llm = llm
+        self.cache_manager = cache_manager
+        
+        # Classification prompt template
+        self.classification_prompt = """You are an intelligent query router. Analyze the user's question and determine which tool should be used to answer it.
+
+Available tools:
+1. **knowledge_base** (RAG): Use for questions about documents, policies, text content, images, audio/video transcripts, general information from uploaded files.
+2. **database** (SQL): Use for quantitative queries, counting, aggregations, listing records, querying structured data from database tables.
+
+Classification rules:
+- Questions about "how many", "count", "sum", "total", "list all", "show records" → database
+- Questions about policies, documents, "what is", "explain", "tell me about" → knowledge_base
+- Questions that need both structured data AND document context → both
+- If uncertain, prefer knowledge_base as it's more general
+
+User query: "{query}"
+
+Respond with ONLY a JSON object in this exact format:
+{{
+    "intent": "knowledge_base" | "database" | "both" | "unknown",
+    "confidence": 0.0-1.0,
+    "reasoning": "brief explanation"
+}}"""
+
+    def classify(self, query: str, conversation_history: Optional[list] = None) -> dict:
+        """
+        Classify the intent of a user query.
+        
+        Args:
+            query: The user's query string
+            conversation_history: Optional list of previous messages for context
+            
+        Returns:
+            dict with keys: intent (IntentType), confidence (float), reasoning (str)
+        """
+        # Check cache first
+        if self.cache_manager:
+            cached_intent = self.cache_manager.get_cached_intent(query)
+            if cached_intent:
+                return cached_intent
+        
+        # Prepare the classification prompt
+        prompt = self.classification_prompt.format(query=query)
+        
+        # Add conversation context if available
+        messages = []
+        if conversation_history:
+            # Include last 3 exchanges for context (to avoid token bloat)
+            recent_history = conversation_history[-6:] if len(conversation_history) > 6 else conversation_history
+            for msg in recent_history:
+                if isinstance(msg, dict):
+                    role = msg.get("role", "user")
+                    content = msg.get("content", "")
+                else:
+                    role = msg.role if hasattr(msg, 'role') else "user"
+                    content = str(msg.content) if hasattr(msg, 'content') else str(msg)
+                
+                if role in ["user", "assistant"]:
+                    messages.append(ChatMessage(role=role, content=content))
+        
+        messages.append(ChatMessage(role="user", content=prompt))
+        
+        try:
+            # Get classification from LLM
+            response = self.llm.complete(prompt)
+            response_text = str(response).strip()
+            
+            # Try to parse JSON response
+            # Sometimes LLM adds markdown code blocks, so we need to extract JSON
+            if "```json" in response_text:
+                response_text = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text:
+                response_text = response_text.split("```")[1].split("```")[0].strip()
+            
+            # Parse JSON
+            try:
+                result = json.loads(response_text)
+            except json.JSONDecodeError:
+                # If JSON parsing fails, try to extract intent from text
+                result = self._parse_fallback(response_text)
+            
+            # Validate and normalize result
+            intent = result.get("intent", "unknown").lower()
+            if intent not in ["knowledge_base", "database", "both", "unknown"]:
+                intent = "unknown"
+            
+            classification = {
+                "intent": intent,
+                "confidence": float(result.get("confidence", 0.5)),
+                "reasoning": result.get("reasoning", "LLM classification")
+            }
+            
+            # Cache the result
+            if self.cache_manager:
+                self.cache_manager.set_cached_intent(query, classification)
+            
+            return classification
+            
+        except Exception as e:
+            # Fallback to unknown on error
+            classification = {
+                "intent": "unknown",
+                "confidence": 0.0,
+                "reasoning": f"Classification error: {str(e)}"
+            }
+            return classification
+    
+    def _parse_fallback(self, text: str) -> dict:
+        """
+        Fallback parser if JSON parsing fails.
+        Tries to extract intent from natural language response.
+        """
+        text_lower = text.lower()
+        
+        if "knowledge_base" in text_lower or "knowledge base" in text_lower or "rag" in text_lower:
+            intent = "knowledge_base"
+        elif "database" in text_lower or "sql" in text_lower:
+            intent = "database"
+        elif "both" in text_lower:
+            intent = "both"
+        else:
+            intent = "unknown"
+        
+        return {
+            "intent": intent,
+            "confidence": 0.6,
+            "reasoning": "Parsed from text response"
+        }
+
+
+def classify_with_keywords(query: str) -> dict:
+    """
+    Fallback keyword-based classification.
+    Used when LLM classification fails or as a backup.
+    
+    Args:
+        query: The user's query string
+        
+    Returns:
+        dict with intent classification
+    """
+    query_lower = query.lower()
+    
+    # Database keywords
+    db_keywords = [
+        "how many", "count", "list", "sum", "total", "database", 
+        "table", "rows", "records", "users", "from database",
+        "show all", "select", "query database", "aggregate"
+    ]
+    
+    # Knowledge base keywords
+    kb_keywords = [
+        "what is", "explain", "tell me about", "describe", 
+        "policy", "document", "file", "content", "information about"
+    ]
+    
+    needs_db = any(keyword in query_lower for keyword in db_keywords)
+    needs_kb = any(keyword in query_lower for keyword in kb_keywords)
+    
+    if needs_db and needs_kb:
+        intent = "both"
+        confidence = 0.7
+    elif needs_db:
+        intent = "database"
+        confidence = 0.8
+    elif needs_kb:
+        intent = "knowledge_base"
+        confidence = 0.8
+    else:
+        # Default to knowledge_base for general queries
+        intent = "knowledge_base"
+        confidence = 0.5
+    
+    return {
+        "intent": intent,
+        "confidence": confidence,
+        "reasoning": "Keyword-based classification"
+    }
+
