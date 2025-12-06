@@ -136,8 +136,19 @@ def main():
         memory = ChatMemoryBuffer.from_defaults(chat_history=history)
         
         # Enhanced intelligent router with LLM-based intent classification
-        # Initialize intent classifier with caching
-        intent_classifier = IntentClassifier(llm=llm, cache_manager=cache_mgr)
+        # Get database schema summary for better routing decisions
+        schema_summary = None
+        if sql_engine:
+            from modules.database import DatabaseManager
+            db_mgr = DatabaseManager()
+            schema_summary = db_mgr.get_schema_summary()
+        
+        # Initialize intent classifier with caching and schema information
+        intent_classifier = IntentClassifier(
+            llm=llm, 
+            cache_manager=cache_mgr,
+            schema_summary=schema_summary
+        )
         
         chat_engine = {
             "type": "enhanced_router",

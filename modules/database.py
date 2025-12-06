@@ -97,6 +97,37 @@ class DatabaseManager:
         except Exception as e:
             return f"Scan failed: {e}"
 
+    def get_schema_summary(self):
+        """
+        Get a concise summary of database schema (tables and columns) for intent classification.
+        Returns None if schema cannot be retrieved.
+        """
+        uri = self.get_connection_string()
+        if not uri:
+            return None
+            
+        try:
+            engine = create_engine(uri)
+            inspector = inspect(engine)
+            table_names = inspector.get_table_names()
+            
+            if not table_names:
+                return None
+            
+            schema_summary = []
+            schema_summary.append(f"Database has {len(table_names)} table(s): {', '.join(table_names)}")
+            schema_summary.append("")
+            
+            for table in table_names:
+                columns = inspector.get_columns(table)
+                col_names = [c['name'] for c in columns]
+                schema_summary.append(f"Table '{table}': {', '.join(col_names)}")
+            
+            return "\n".join(schema_summary)
+        except Exception as e:
+            # If schema scan fails, return None (will use fallback)
+            return None
+
     def get_sql_query_engine(self, llm):
         """
         Creates a NLSQLTableQueryEngine for natural language to SQL translation.

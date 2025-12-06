@@ -18,26 +18,31 @@ class IntentClassifier:
     Uses LLM for intelligent classification with caching support.
     """
     
-    def __init__(self, llm, cache_manager=None):
+    def __init__(self, llm, cache_manager=None, schema_summary=None):
         """
         Initialize the intent classifier.
         
         Args:
             llm: The LLM instance to use for classification
             cache_manager: Optional CacheManager instance for caching intent classifications
+            schema_summary: Optional database schema summary (tables and columns) to help with routing
         """
         self.llm = llm
         self.cache_manager = cache_manager
+        self.schema_summary = schema_summary
         
         # Classification prompt template
-        self.classification_prompt = """You are an intelligent query router. Analyze the user's question and determine which tool should be used to answer it.
+        base_prompt = """You are an intelligent query router. Analyze the user's question and determine which tool should be used to answer it.
 
 Available tools:
 1. **knowledge_base** (RAG): Use for questions about documents, policies, text content, images, audio/video transcripts, general information from uploaded files.
 2. **database** (SQL): Use for quantitative queries, counting, aggregations, listing records, querying structured data from database tables.
 
+{schema_context}
+
 Classification rules:
 - Questions about "how many", "count", "sum", "total", "list all", "show records" → database
+- Questions mentioning specific table names or column names from the schema → database
 - Questions about policies, documents, "what is", "explain", "tell me about" → knowledge_base
 - Questions that need both structured data AND document context → both
 - If uncertain, prefer knowledge_base as it's more general
@@ -50,6 +55,8 @@ Respond with ONLY a JSON object in this exact format:
     "confidence": 0.0-1.0,
     "reasoning": "brief explanation"
 }}"""
+        
+        self.classification_prompt_template = base_prompt
 
     def classify(self, query: str, conversation_history: Optional[list] = None) -> dict:
         """
@@ -68,8 +75,21 @@ Respond with ONLY a JSON object in this exact format:
             if cached_intent:
                 return cached_intent
         
+        # Build schema context if available
+        schema_context = ""
+        if self.schema_summary:
+            schema_context = f"""Database Schema Information:
+{self.schema_summary}
+
+Use this schema to identify if the query is asking about database tables/columns. If the query mentions table names, column names, or asks about data in these tables, route to database."""
+        else:
+            schema_context = "No database schema information available."
+        
         # Prepare the classification prompt
-        prompt = self.classification_prompt.format(query=query)
+        prompt = self.classification_prompt_template.format(
+            schema_context=schema_context,
+            query=query
+        )
         
         # Add conversation context if available
         messages = []
