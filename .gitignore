@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment (must be first to catch all venv files)
+venv/
+env/
+ENV/
+.venv
+**/venv/
+**/__pycache__/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Streamlit
+.streamlit/
+
+# Application specific
+chroma_db/
+*.db
+*.sqlite
+*.sqlite3
+
+# Cache and session files
+cache_store.json
+sessions.json
+
+# Config with sensitive data
+config.json
+
+# Environment variables
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+temp_details.txt
+*.tmp
+.~lock.*
+*.lock
+
+# Data files (optional - uncomment if you don't want to commit data)
+# data/
+# *.xlsx
+# *.csv
+

@@ -1,0 +1,32 @@
+Task Checklist: Offline Multi-Modal RAG Chatbot
+
+ Phase 1: Planning & Setup
+ Create detailed implementation plan (Architecture & LLM Selection)
+ Set up Python virtual environment and install dependencies
+ Install and configure Ollama (Pull Qwen2.5, Qwen-VL, bge-m3)
+
+ Phase 2: Data Ingestion & Processing Layer
+ Create ingest.py
+ for document processing logic
+ Implement PDF and Text extraction (with Qwen-VL for complex pages)
+ Implement Excel/CSV processing (SQL + Text)
+ Implement Database connection & extraction (SQL)
+ Implement Image Captioning (Qwen2.5-VL)
+ Implement Audio/Video Transcription (Whisper)
+
+ Phase 3: Vector Database & Retrieval
+ Set up Vector Database (ChromaDB)
+ Create Embedding Pipeline (bge-m3)
+ Implement Retriever class (with Caching)
+
+ Phase 4: Chatbot Core & UI
+ Implement LLM Interface (Qwen2.5 via Ollama)
+ Build Orchestrator/Router (Intent Classification)
+ Implement Session Management (Redis/SQLite)
+ Build Chat Engine (Context retrieval + Prompt Building)
+ Create User Interface (Streamlit)
+
+ Phase 5: Verification & Polish
+ Test with different file types (PDF, Excel, Audio)
+ Optimize system prompt for professional business tone
+ Write documentation and usage guide

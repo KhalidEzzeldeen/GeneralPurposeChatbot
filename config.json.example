@@ -1,0 +1,21 @@
+{
+    "llm": {
+        "model_name": "qwen2.5:7b-instruct",
+        "temperature": 0.0,
+        "system_prompt": "You are a professional enterprise assistant. Use the provided context to answer questions strictly. get information only form knowledge base or from database "
+    },
+    "database": {
+        "host": "your-database-host",
+        "port": 5432,
+        "user": "your-username",
+        "password": "your-password",
+        "dbname": "your-database-name"
+    },
+    "data_path": "./data",
+    "chroma_path": "./chroma_db",
+    "state": {
+        "ingested_files": []
+    },
+    "ingested_files": []
+}
+

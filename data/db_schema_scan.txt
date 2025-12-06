@@ -1,0 +1,57 @@
+Database Schema Scan for ep-long-sound-a9dqh1py-pooler.gwc.azure.neon.tech:5432/neondb?sslmode=require
+Tables: sales, publicservices
+
+### Table: sales
+- sale_id (TEXT)
+- listing_id (TEXT)
+- purpose (TEXT)
+- emirate (TEXT)
+- community (TEXT)
+- developer (TEXT)
+- project_name (TEXT)
+- property_type (TEXT)
+- handover_status (TEXT)
+- bedrooms (INTEGER)
+- bathrooms (INTEGER)
+- built_up_area_sqm (NUMERIC(10, 2))
+- plot_area_sqm (NUMERIC(10, 2))
+- floor (NUMERIC(6, 2))
+- furnishing (TEXT)
+- view (TEXT)
+- parking_spots (INTEGER)
+- sale_price_aed (INTEGER)
+- price_per_sqm_aed (NUMERIC(12, 2))
+- currency (TEXT)
+- sale_date (DATE)
+- buyer_region (TEXT)
+- lead_source (TEXT)
+- lead_quality_score (INTEGER)
+- agent_id (TEXT)
+- payment_type (TEXT)
+- mortgage_preapproved (BOOLEAN)
+- transfer_fee_estimate_aed (NUMERIC(12, 2))
+- agency_commission_estimate_aed (NUMERIC(12, 2))
+- service_charge_aed_per_sqm_year (NUMERIC(10, 2))
+- service_charge_est_annual_aed (NUMERIC(12, 2))
+- rental_yield_estimate_pct (NUMERIC(5, 3))
+- roi_5y_estimate_pct (NUMERIC(6, 3))
+Sample Data:
+sale_id listing_id purpose emirate          community developer        project_name property_type handover_status  bedrooms  bathrooms  built_up_area_sqm  plot_area_sqm  floor       furnishing      view  parking_spots  sale_price_aed  price_per_sqm_aed currency  sale_date buyer_region    lead_source  lead_quality_score agent_id payment_type  mortgage_preapproved  transfer_fee_estimate_aed  agency_commission_estimate_aed  service_charge_aed_per_sqm_year  service_charge_est_annual_aed  rental_yield_estimate_pct  roi_5y_estimate_pct
+ S00459    L364053    Sale   Dubai       Business Bay     Sobha Sobha Business Cove     Apartment        Off-plan         1          2             164.87            NaN   23.0        Furnished   Skyline              0         2262000           13720.05      AED 2025-09-08    East Asia         Social                  71     A789 Payment Plan                 False                    90481.0                         45909.0                            38.07                         6276.0                      0.050                0.299
+ S00827    L245780    Sale   Dubai       Dubai Marina   Nakheel Nakheel Dubai Point     Apartment        Off-plan         1          1             113.15            NaN   36.0        Furnished Community              2         2072000           18314.41      AED 2025-09-08       Africa Email Campaign                  61     A384     Mortgage                 False                    82891.0                         36309.0                            41.44                         4689.0                      0.060                0.383
+ S00173    L662060    Sale   Dubai Dubai Hills Estate     Aldar Aldar Dubai Harbour        Duplex           Ready         3          3             161.49            NaN   51.0 Partly Furnished Community              1         2917000           18063.03      AED 2025-09-08          CIS        Website                  45     A379         Cash                 False                   116680.0                         58557.0                            58.71                         9481.0                      0.047                0.291
+
+
+### Table: publicservices
+- service_name_arabic (VARCHAR)
+- service_name_english (VARCHAR)
+- description_arabic (VARCHAR)
+- description_english (VARCHAR)
+- steps_arabic (VARCHAR)
+- steps_english (VARCHAR)
+Sample Data:
+                                              service_name_arabic                                                             service_name_english                                                                                                                   description_arabic                                                                                                                                                            description_english                                                                                                                               steps_arabic                                                                                                                               steps_english
+                     طلب خدمة سحب مياه الصرف الصحى للبيوت السكنية                                Request for Drainage Suction - Residential Houses يقوم سكان مدينة الشارقة بطلب صهريج صرف صحي (سحب مياه المجاري) وتعبئة الاستمارة إلكترونياً مع إمكانية دفع رسوم الصهريج عن طريق تحصيل. Residents of Sharjah can request a sewage tanker to suction wastewater from residential houses and fill the form online with the option to pay the tanker fees electronically.                                1) إدخال البيانات المطلوبة.\n2) الموافقة على التعهد والاشتراطات.\n3) توفر بطاقة تحصيل أو أي بطاقة ائتمانية.                 1) Enter the required data.\n2) Accept the terms and conditions.\n3) Provide a Tahseel card or any credit card for payment.
+خدمة الإستعلام عن شهادات براءة الذمة الصادرة من نظام عقود الإيجار Inquiry service about clearance certificates issued by the lease contract system                                                                 هي خدمة لاستعلام عن شهادات براءة الذمة الصادرة من نظام عقود الإيجار.                                                                                         A service to inquire about clearance certificates issued by the lease contract system.                     1) الدخول إلى الخدمة عبر الموقع الإلكتروني.\n2) إدخال بيانات عقد الإيجار المطلوبة.\n3) عرض أو طباعة شهادة براءة الذمة.      1) Access the service through the website.\n2) Enter the required lease contract details.\n3) View or print the clearance certificate.
+              الاستعلام عن المؤشرات الايجارية (الخارطة الايجارية)                                                Rental Indicators Inquiry Service خدمة استعلام عن المؤشرات الإيجارية في مناطق إمارة الشارقة لمعرفة أعلى وأقل قيمة إيجارية من خلال تحديد نوع العقد ونوع العين والمنطقة.                   A service to inquire about rental indicators in Sharjah areas to know the minimum and maximum rental values by selecting contract type, unit type, and area. 1) الدخول إلى الخدمة عبر الموقع الإلكتروني.\n2) اختيار نوع العقد ونوع العين والمنطقة.\n3) استعراض المؤشرات الإيجارية المعروضة على الخارطة. 1) Access the service on the website.\n2) Select contract type, unit type, and area.\n3) Review the rental indicators displayed on the map.
+

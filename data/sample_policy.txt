@@ -1,0 +1,12 @@
+This is a sample document to test the Offline Chatbot.
+It contains information about "ProBot Corporate".
+
+ProBot Corporate Policies:
+1. Working Hours: 9 AM to 5 PM, Monday to Friday.
+2. Remote Work: Allowed for up to 3 days a week with manager approval.
+3. Health Insurance: Full coverage for employees and 50% for dependents.
+4. Leave Policy: 20 days of annual leave and 10 days of sick leave.
+
+Contact Support:
+Email: support@probot.corp
+Phone: +1-555-0199
