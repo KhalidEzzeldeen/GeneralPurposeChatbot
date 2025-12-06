@@ -141,19 +141,33 @@ class DatabaseManager:
                 # Add sample data to help LLM understand the content
                 if sample_data is not None and not sample_data.empty:
                     schema_summary.append("Sample data (examples of what this table contains):")
-                    # Format sample data in a readable way
+                    # For text columns, show the actual values to help LLM understand content
+                    text_columns = [col for col in col_names if col_types.get(col, '').upper() in ['TEXT', 'VARCHAR', 'CHAR', 'STRING']]
+                    
+                    # Show sample values from text columns (these are most important for understanding content)
                     for idx, row in sample_data.iterrows():
-                        # Create a description of this row
-                        row_desc = []
-                        for col in sample_data.columns:
-                            val = row[col]
-                            if pd.notna(val):
-                                # Truncate long values
-                                val_str = str(val)
-                                if len(val_str) > 50:
-                                    val_str = val_str[:47] + "..."
-                                row_desc.append(f"{col}: {val_str}")
-                        schema_summary.append(f"  - Example: {', '.join(row_desc[:5])}")  # Show first 5 fields
+                        row_examples = []
+                        for col in text_columns[:3]:  # Show first 3 text columns
+                            if col in sample_data.columns:
+                                val = row[col]
+                                if pd.notna(val) and str(val).strip():
+                                    val_str = str(val).strip()
+                                    # Truncate very long values but keep enough context
+                                    if len(val_str) > 100:
+                                        val_str = val_str[:97] + "..."
+                                    row_examples.append(f"{col}='{val_str}'")
+                        
+                        if row_examples:
+                            schema_summary.append(f"  Example row {idx+1}: {', '.join(row_examples)}")
+                    
+                    # Also show a summary of all unique values in key text columns (for understanding what's in the table)
+                    if text_columns:
+                        for col in text_columns[:2]:  # Check first 2 text columns
+                            if col in sample_data.columns:
+                                unique_vals = sample_data[col].dropna().unique()[:10]  # Get up to 10 unique values
+                                if len(unique_vals) > 0:
+                                    val_list = [str(v)[:50] for v in unique_vals[:5]]  # Show first 5, truncated
+                                    schema_summary.append(f"  Sample {col} values: {', '.join(val_list)}")
                 else:
                     schema_summary.append("(No sample data available)")
                 

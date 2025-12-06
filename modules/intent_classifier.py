@@ -91,9 +91,20 @@ Respond with ONLY a JSON object in this exact format:
             schema_context = f"""Database Schema Information:
 {self.schema_summary}
 
-Use this schema to identify if the query is asking about database tables/columns. If the query mentions table names, column names, or asks about data in these tables, route to database."""
+IMPORTANT: Use this schema to intelligently determine if the user's query is asking about data that exists in the database.
+
+Analysis process:
+1. Look at the sample data in each table - what actual content/values are stored?
+2. Check if the user's query mentions or asks about:
+   - Any table names (e.g., "sales", "publicservices")
+   - Any column names (e.g., "service_name_english", "emirate")
+   - Any actual data values that appear in the sample data (e.g., "Drainage Suction", "Dubai", specific service names)
+3. If the query is asking about information that appears to be in the database tables (based on table names, column names, or sample data values), route to database.
+4. If the query is asking about general policies, documents, or information not found in the database schema, route to knowledge_base.
+
+Example: If user asks "Drainage Suction" and the schema shows "publicservices" table has "service_name_english" column with "Request for Drainage Suction" in sample data, this is clearly a database query."""
         else:
-            schema_context = "No database schema information available."
+            schema_context = "No database schema information available. Use keyword-based classification."
         
         # Prepare the classification prompt
         prompt = self.classification_prompt_template.format(
