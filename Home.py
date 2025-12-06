@@ -21,9 +21,10 @@ import time
 st.set_page_config(page_title="ProBot - Enterprise Assistant", layout="wide")
 
 # Streamlit caching for expensive operations
+# Note: Cache key includes model_name to ensure different models are cached separately
 @st.cache_resource
 def get_llm_and_embedding(model_name, embed_model_name, temperature):
-    """Cache LLM and embedding model initialization."""
+    """Cache LLM and embedding model initialization. Model-specific caching."""
     return setup_llm_engine(
         model_name=model_name, 
         embed_model_name=embed_model_name,
@@ -86,8 +87,15 @@ def main():
     # Sidebar showing current config
     with st.sidebar:
         st.header("Status")
-        st.info(f"Model: {llm_conf['model_name']}")
-        st.caption("Go to 'Settings' page to configure.")
+        from modules.model_registry import get_model_info
+        model_info = get_model_info(llm_conf['model_name'])
+        model_display = model_info.get('name', llm_conf['model_name'])
+        speed_info = model_info.get('speed', '')
+        if speed_info:
+            st.info(f"**Model:** {model_display}\n⚡ **Speed:** {speed_info}")
+        else:
+            st.info(f"**Model:** {model_display}")
+        st.caption("Go to 'Settings' page to change model.")
         if st.button("New Chat"):
             # Create a new session ID for a fresh start
             st.session_state.session_id = str(uuid.uuid4())

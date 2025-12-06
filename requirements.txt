@@ -18,3 +18,4 @@ psycopg2-binary
 ollama
 redis
 python-docx
+requests
