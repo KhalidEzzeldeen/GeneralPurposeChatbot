@@ -94,15 +94,36 @@ Respond with ONLY a JSON object in this exact format:
 IMPORTANT: Use this schema to intelligently determine if the user's query is asking about data that exists in the database.
 
 Analysis process:
-1. Look at the sample data in each table - what actual content/values are stored?
-2. Check if the user's query mentions or asks about:
-   - Any table names (e.g., "sales", "publicservices")
-   - Any column names (e.g., "service_name_english", "emirate")
-   - Any actual data values that appear in the sample data (e.g., "Drainage Suction", "Dubai", specific service names)
-3. If the query is asking about information that appears to be in the database tables (based on table names, column names, or sample data values), route to database.
-4. If the query is asking about general policies, documents, or information not found in the database schema, route to knowledge_base.
+1. Understand what each table contains by examining:
+   - The table description (what kind of data it stores)
+   - Column names (what information is tracked)
+   - Sample values shown (examples of actual content)
+   - The DISTINCT values listed (variety of content in the table)
 
-Example: If user asks "Drainage Suction" and the schema shows "publicservices" table has "service_name_english" column with "Request for Drainage Suction" in sample data, this is clearly a database query."""
+2. Check if the user's query is asking about:
+   - Information that matches the table's purpose/description
+   - Data that would logically be in these tables based on their structure
+   - Content similar to the sample values shown (even if not exact match)
+   - Any table names, column names, or data types
+
+3. Key insight: If a query is about a topic/entity that the table is designed to store, route to database.
+   - Example: "publicservices" table contains various municipal services. If user asks about ANY service (e.g., "Parking Subscription", "Drainage Suction", etc.), even if not in sample data, it's likely in this table → route to database.
+   - Example: "sales" table contains property sales data. If user asks about properties, sales, locations, etc. → route to database.
+
+4. Only route to knowledge_base if:
+   - Query is about general policies, procedures, or documents
+   - Query is about information clearly NOT in the database tables
+   - Query is asking "what is" or "explain" about concepts, not data retrieval
+
+Example 1: User asks "Parking Subscription steps"
+- Schema shows "publicservices" table contains various municipal services with steps_english column
+- Even if "Parking Subscription" not in sample, the table is designed for services → route to database ✅
+
+Example 2: User asks "Drainage Suction"
+- Schema shows "publicservices" table has service_name_english with "Request for Drainage Suction" → route to database ✅
+
+Example 3: User asks "What is the company policy on remote work?"
+- No table contains policies → route to knowledge_base ✅"""
         else:
             schema_context = "No database schema information available. Use keyword-based classification."
         

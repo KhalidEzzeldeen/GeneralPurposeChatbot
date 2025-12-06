@@ -129,7 +129,7 @@ class DatabaseManager:
                 # Get sample data to understand what's actually in the table
                 sample_data = None
                 try:
-                    df = pd.read_sql_table(table, engine).head(5)  # Get 5 samples for better understanding
+                    df = pd.read_sql_table(table, engine).head(10)  # Get 10 samples for better understanding
                     if not df.empty:
                         sample_data = df
                 except Exception:
@@ -138,36 +138,52 @@ class DatabaseManager:
                 schema_summary.append(f"**Table: {table}**")
                 schema_summary.append(f"Columns: {', '.join(col_names)}")
                 
-                # Add sample data to help LLM understand the content
+                # Identify text columns that likely contain descriptive content
+                text_columns = [col for col in col_names if col_types.get(col, '').upper() in ['TEXT', 'VARCHAR', 'CHAR', 'STRING']]
+                
+                # Get DISTINCT values from key text columns to understand table content diversity
+                table_description = []
+                if text_columns:
+                    for col in text_columns[:3]:  # Check first 3 text columns
+                        try:
+                            # Query for distinct values from this column
+                            distinct_query = f"SELECT DISTINCT {col} FROM {table} WHERE {col} IS NOT NULL LIMIT 20"
+                            distinct_df = pd.read_sql(distinct_query, engine)
+                            if not distinct_df.empty:
+                                distinct_vals = distinct_df[col].dropna().unique()
+                                if len(distinct_vals) > 0:
+                                    # Create a description of what this column contains
+                                    val_samples = [str(v)[:60] for v in distinct_vals[:8]]  # Show up to 8 examples
+                                    table_description.append(f"  {col} contains values like: {', '.join(val_samples)}")
+                                    if len(distinct_vals) > 8:
+                                        table_description.append(f"    ... and {len(distinct_vals) - 8} more unique values")
+                        except Exception:
+                            pass
+                
+                # Add table description based on column names and content
+                if table_description:
+                    schema_summary.append("This table contains:")
+                    schema_summary.extend(table_description)
+                    schema_summary.append("")
+                
+                # Add sample data examples
                 if sample_data is not None and not sample_data.empty:
-                    schema_summary.append("Sample data (examples of what this table contains):")
-                    # For text columns, show the actual values to help LLM understand content
-                    text_columns = [col for col in col_names if col_types.get(col, '').upper() in ['TEXT', 'VARCHAR', 'CHAR', 'STRING']]
-                    
-                    # Show sample values from text columns (these are most important for understanding content)
-                    for idx, row in sample_data.iterrows():
+                    schema_summary.append("Sample rows (examples of actual data):")
+                    # Show a few example rows with key information
+                    for idx, row in sample_data.head(3).iterrows():
                         row_examples = []
-                        for col in text_columns[:3]:  # Show first 3 text columns
+                        for col in text_columns[:2]:  # Show first 2 text columns
                             if col in sample_data.columns:
                                 val = row[col]
                                 if pd.notna(val) and str(val).strip():
                                     val_str = str(val).strip()
                                     # Truncate very long values but keep enough context
-                                    if len(val_str) > 100:
-                                        val_str = val_str[:97] + "..."
+                                    if len(val_str) > 80:
+                                        val_str = val_str[:77] + "..."
                                     row_examples.append(f"{col}='{val_str}'")
                         
                         if row_examples:
-                            schema_summary.append(f"  Example row {idx+1}: {', '.join(row_examples)}")
-                    
-                    # Also show a summary of all unique values in key text columns (for understanding what's in the table)
-                    if text_columns:
-                        for col in text_columns[:2]:  # Check first 2 text columns
-                            if col in sample_data.columns:
-                                unique_vals = sample_data[col].dropna().unique()[:10]  # Get up to 10 unique values
-                                if len(unique_vals) > 0:
-                                    val_list = [str(v)[:50] for v in unique_vals[:5]]  # Show first 5, truncated
-                                    schema_summary.append(f"  Sample {col} values: {', '.join(val_list)}")
+                            schema_summary.append(f"  Row {idx+1}: {', '.join(row_examples)}")
                 else:
                     schema_summary.append("(No sample data available)")
                 
