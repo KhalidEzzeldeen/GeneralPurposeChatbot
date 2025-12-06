@@ -6,9 +6,16 @@ import time
 from collections import OrderedDict
 from typing import Optional, Any
 
-CACHE_FILE = "cache_store.json"
+CACHE_FILE = os.path.join("storage", "cache_store.json")
 MAX_CACHE_SIZE = 1000  # Maximum entries in memory cache
 PERSIST_INTERVAL = 30  # Persist to disk every 30 seconds
+
+# Ensure storage directory exists
+def _ensure_storage_dir():
+    """Ensure storage directory exists."""
+    storage_dir = os.path.dirname(CACHE_FILE)
+    if storage_dir and not os.path.exists(storage_dir):
+        os.makedirs(storage_dir, exist_ok=True)
 
 class LRUCache:
     """LRU Cache implementation with size limit."""
@@ -81,6 +88,7 @@ class CacheManager:
     
     def _load_from_disk(self):
         """Load cache from disk into memory."""
+        _ensure_storage_dir()  # Ensure storage directory exists
         if os.path.exists(CACHE_FILE):
             try:
                 with open(CACHE_FILE, 'r', encoding='utf-8') as f:
@@ -102,6 +110,7 @@ class CacheManager:
                 return
             
             try:
+                _ensure_storage_dir()  # Ensure storage directory exists
                 # Get current cache state
                 cache_data = self._memory_cache.to_dict()
                 

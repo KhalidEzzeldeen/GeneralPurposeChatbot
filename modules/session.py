@@ -14,7 +14,11 @@ class SessionManager:
         if self.use_redis:
             self.r = redis.Redis(host='localhost', port=6379, db=0)
         else:
-            self.file_store = "sessions.json"
+            self.file_store = os.path.join("storage", "sessions.json")
+            # Ensure storage directory exists
+            storage_dir = os.path.dirname(self.file_store)
+            if storage_dir and not os.path.exists(storage_dir):
+                os.makedirs(storage_dir, exist_ok=True)
             if not os.path.exists(self.file_store):
                 with open(self.file_store, 'w') as f:
                     json.dump({}, f)
