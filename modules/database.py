@@ -99,7 +99,8 @@ class DatabaseManager:
 
     def get_schema_summary(self):
         """
-        Get a concise summary of database schema (tables and columns) for intent classification.
+        Get a comprehensive summary of database schema including tables, columns, and sample data.
+        This helps the LLM understand what data is available in the database for intelligent routing.
         Returns None if schema cannot be retrieved.
         """
         uri = self.get_connection_string()
@@ -115,13 +116,48 @@ class DatabaseManager:
                 return None
             
             schema_summary = []
-            schema_summary.append(f"Database has {len(table_names)} table(s): {', '.join(table_names)}")
+            schema_summary.append(f"Database contains {len(table_names)} table(s): {', '.join(table_names)}")
+            schema_summary.append("")
+            schema_summary.append("Each table contains the following data:")
             schema_summary.append("")
             
             for table in table_names:
                 columns = inspector.get_columns(table)
                 col_names = [c['name'] for c in columns]
-                schema_summary.append(f"Table '{table}': {', '.join(col_names)}")
+                col_types = {c['name']: str(c['type']) for c in columns}
+                
+                # Get sample data to understand what's actually in the table
+                sample_data = None
+                try:
+                    df = pd.read_sql_table(table, engine).head(5)  # Get 5 samples for better understanding
+                    if not df.empty:
+                        sample_data = df
+                except Exception:
+                    pass
+                
+                schema_summary.append(f"**Table: {table}**")
+                schema_summary.append(f"Columns: {', '.join(col_names)}")
+                
+                # Add sample data to help LLM understand the content
+                if sample_data is not None and not sample_data.empty:
+                    schema_summary.append("Sample data (examples of what this table contains):")
+                    # Format sample data in a readable way
+                    for idx, row in sample_data.iterrows():
+                        # Create a description of this row
+                        row_desc = []
+                        for col in sample_data.columns:
+                            val = row[col]
+                            if pd.notna(val):
+                                # Truncate long values
+                                val_str = str(val)
+                                if len(val_str) > 50:
+                                    val_str = val_str[:47] + "..."
+                                row_desc.append(f"{col}: {val_str}")
+                        schema_summary.append(f"  - Example: {', '.join(row_desc[:5])}")  # Show first 5 fields
+                else:
+                    schema_summary.append("(No sample data available)")
+                
+                schema_summary.append("")  # Empty line between tables
             
             return "\n".join(schema_summary)
         except Exception as e:

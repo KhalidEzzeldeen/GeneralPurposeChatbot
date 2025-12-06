@@ -35,17 +35,27 @@ class IntentClassifier:
         base_prompt = """You are an intelligent query router. Analyze the user's question and determine which tool should be used to answer it.
 
 Available tools:
-1. **knowledge_base** (RAG): Use for questions about documents, policies, text content, images, audio/video transcripts, general information from uploaded files.
-2. **database** (SQL): Use for quantitative queries, counting, aggregations, listing records, querying structured data from database tables.
+1. **knowledge_base** (RAG): Use for questions about documents, policies, procedures, text content, images, audio/video transcripts, general information from uploaded files.
+2. **database** (SQL): Use for questions about data stored in database tables - queries about records, entities, transactions, services, or any structured data.
 
 {schema_context}
 
-Classification rules:
-- Questions about "how many", "count", "sum", "total", "list all", "show records" → database
-- Questions mentioning specific table names or column names from the schema → database
-- Questions about policies, documents, "what is", "explain", "tell me about" → knowledge_base
-- Questions that need both structured data AND document context → both
-- If uncertain, prefer knowledge_base as it's more general
+Classification logic:
+1. **First, check if the query is about data in the database:**
+   - Look at the sample data in the schema above
+   - If the user's query mentions entities, services, records, or data that matches what's in the sample data → route to **database**
+   - Examples: If schema shows "publicservices" table with service names, and user asks about a service → **database**
+   - Examples: If schema shows "sales" table with property data, and user asks about properties → **database**
+
+2. **Then check if it's about documents/policies:**
+   - Questions about "what is", "explain", "tell me about" policies, procedures, documents → **knowledge_base**
+   - General informational questions not about specific data records → **knowledge_base**
+
+3. **Special cases:**
+   - Questions that need both structured data AND document context → **both**
+   - If the query could be answered by either, prefer **database** if it matches sample data, otherwise **knowledge_base**
+
+Key insight: The user doesn't know where the information is stored. Your job is to understand what they're asking about and match it to the available data sources based on the schema and sample data shown above.
 
 User query: "{query}"
 
@@ -53,7 +63,7 @@ Respond with ONLY a JSON object in this exact format:
 {{
     "intent": "knowledge_base" | "database" | "both" | "unknown",
     "confidence": 0.0-1.0,
-    "reasoning": "brief explanation"
+    "reasoning": "brief explanation of why this intent was chosen, referencing schema data if relevant"
 }}"""
         
         self.classification_prompt_template = base_prompt
