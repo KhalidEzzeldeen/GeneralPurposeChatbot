@@ -190,11 +190,12 @@ def classify_with_keywords(query: str) -> dict:
     """
     query_lower = query.lower()
     
-    # Database keywords
+    # Database keywords (prioritize explicit requests)
     db_keywords = [
+        "from database", "query database", "database query", "show from database",  # Explicit requests (highest priority)
         "how many", "count", "list", "sum", "total", "database", 
-        "table", "rows", "records", "users", "from database",
-        "show all", "select", "query database", "aggregate"
+        "table", "rows", "records", "users",
+        "show all", "select", "aggregate", "get from db", "fetch from database"
     ]
     
     # Knowledge base keywords

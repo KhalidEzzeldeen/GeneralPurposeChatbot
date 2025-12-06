@@ -200,44 +200,67 @@ def main():
                                 # Get conversation history for context
                                 conversation_history = st.session_state.messages[-10:] if len(st.session_state.messages) > 10 else st.session_state.messages
                                 
-                                # Try LLM-based classification first (if enhanced_router)
-                                intent_classification = None
-                                if chat_engine.get("type") == "enhanced_router" and chat_engine.get("intent_classifier"):
-                                    try:
-                                        intent_classification = chat_engine["intent_classifier"].classify(
-                                            query=prompt,
-                                            conversation_history=conversation_history
-                                        )
-                                    except Exception as e:
-                                        # If LLM classification fails, fall back to keyword-based
-                                        st.warning(f"Intent classification failed, using keyword fallback: {str(e)}")
-                                        intent_classification = None
+                                # Check for explicit database keywords FIRST (priority over LLM)
+                                # This ensures "from database" and similar explicit requests are honored
+                                explicit_db_keywords = ["from database", "query database", "database query", "show from database"]
+                                prompt_lower = prompt.lower()
+                                has_explicit_db_request = any(keyword in prompt_lower for keyword in explicit_db_keywords)
                                 
-                                # Fallback to keyword-based if LLM classification failed or not available
-                                if not intent_classification:
-                                    intent_classification = classify_with_keywords(prompt)
+                                # Check if previous message had "from database" (follow-up query)
+                                previous_was_db_request = False
+                                if len(st.session_state.messages) >= 2:
+                                    prev_user_msg = st.session_state.messages[-2].get("content", "").lower() if isinstance(st.session_state.messages[-2], dict) else ""
+                                    previous_was_db_request = any(keyword in prev_user_msg for keyword in explicit_db_keywords)
+                                
+                                # If explicit database request, route directly to database
+                                if has_explicit_db_request or previous_was_db_request:
+                                    intent_classification = {
+                                        "intent": "database",
+                                        "confidence": 0.95,
+                                        "reasoning": "Explicit database request detected"
+                                    }
+                                else:
+                                    # Try LLM-based classification (if enhanced_router)
+                                    intent_classification = None
+                                    if chat_engine.get("type") == "enhanced_router" and chat_engine.get("intent_classifier"):
+                                        try:
+                                            intent_classification = chat_engine["intent_classifier"].classify(
+                                                query=prompt,
+                                                conversation_history=conversation_history
+                                            )
+                                        except Exception as e:
+                                            # If LLM classification fails, fall back to keyword-based
+                                            st.warning(f"Intent classification failed, using keyword fallback: {str(e)}")
+                                            intent_classification = None
+                                    
+                                    # Fallback to keyword-based if LLM classification failed or not available
+                                    if not intent_classification:
+                                        intent_classification = classify_with_keywords(prompt)
                                 
                                 intent = intent_classification.get("intent", "knowledge_base")
                                 confidence = intent_classification.get("confidence", 0.5)
                                 reasoning = intent_classification.get("reasoning", "")
                                 
-                                # Show routing info in debug mode (optional - can be removed in production)
-                                if confidence < 0.7:
-                                    st.info(f"🔀 Routing: {intent} (confidence: {confidence:.2f})")
+                                # Show routing info for debugging
+                                st.info(f"🔀 Routing: {intent} (confidence: {confidence:.2f}) - {reasoning}")
                                 
                                 # Route based on intent
-                                if intent == "database" and chat_engine["sql_engine"]:
-                                    # Route to SQL engine
-                                    try:
-                                        sql_response = chat_engine["sql_engine"].query(prompt)
-                                        response_text = str(sql_response)
-                                        response = sql_response
-                                    except Exception as e:
-                                        # Fallback to RAG if SQL fails
-                                        st.warning("Database query failed, using knowledge base...")
-                                        rag_response = chat_engine["rag_engine"].query(prompt)
-                                        response_text = str(rag_response)
-                                        response = rag_response
+                                if intent == "database":
+                                    if not chat_engine["sql_engine"]:
+                                        response_text = "⚠️ **Error:** Database connection not available. Please configure database in Settings."
+                                        response = None
+                                    else:
+                                        # Route to SQL engine
+                                        try:
+                                            sql_response = chat_engine["sql_engine"].query(prompt)
+                                            response_text = str(sql_response)
+                                            response = sql_response
+                                        except Exception as e:
+                                            # Show detailed error for database queries
+                                            error_msg = str(e)
+                                            response_text = f"⚠️ **Database Query Error:** {error_msg}\n\n*The query was correctly routed to the database, but the SQL execution failed. Please check your query or database connection.*"
+                                            response = None
+                                            st.error(f"SQL Query Failed: {error_msg}")
                                         
                                 elif intent == "both" and chat_engine["sql_engine"]:
                                     # Try both tools and combine results
