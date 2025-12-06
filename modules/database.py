@@ -221,9 +221,11 @@ class DatabaseManager:
         """
         Creates a NLSQLTableQueryEngine for natural language to SQL translation.
         Uses connection pooling for better performance.
+        Configured for semantic/fuzzy text search instead of exact matching.
         """
         from llama_index.core import SQLDatabase
         from llama_index.core.query_engine import NLSQLTableQueryEngine
+        from llama_index.core.prompts import PromptTemplate
         
         try:
             engine = self.get_engine()
@@ -235,9 +237,46 @@ class DatabaseManager:
             
             sql_database = SQLDatabase(engine, include_tables=table_names)
             
+            # Custom prompt that encourages semantic/fuzzy search
+            text_to_sql_tmpl = (
+                "Given an input question, first create a syntactically correct {dialect} "
+                "query to run, then look at the results of the query and return the answer. "
+                "You can order the results by a relevant column to return the most "
+                "interesting examples in the database.\n\n"
+                "**IMPORTANT: For text searches, use semantic/fuzzy matching instead of exact matching:**\n"
+                "- Use ILIKE (case-insensitive) or LIKE with wildcards (%text%) for partial matches\n"
+                "- Use ILIKE '%search_term%' instead of = 'search_term' for text columns\n"
+                "- For PostgreSQL, you can use: column_name ILIKE '%search_term%'\n"
+                "- Search in both Arabic and English columns if both exist: (arabic_column ILIKE '%term%' OR english_column ILIKE '%term%')\n"
+                "- Use multiple variations: search for partial words, synonyms, or related terms\n"
+                "- Example: WHERE service_name_english ILIKE '%soil%' OR service_name_arabic ILIKE '%تربة%'\n\n"
+                "Never query for all the columns from a specific table, only ask for a "
+                "few relevant columns given the question.\n\n"
+                "Pay attention to use only the column names that you can see in the schema "
+                "description. "
+                "Be careful to not query for columns that do not exist. "
+                "Pay attention to which column is in which table. "
+                "Also, qualify column names with the table name when needed. "
+                "You are required to use the following format, each taking one line:\n\n"
+                "Question: Question here\n"
+                "SQLQuery: SQL Query to run\n"
+                "SQLResult: Result of the SQLQuery\n"
+                "Answer: Final answer here\n\n"
+                "Only use tables listed below.\n"
+                "{schema}\n\n"
+                "Question: {query_str}\n"
+                "SQLQuery: "
+            )
+            
+            text_to_sql_prompt = PromptTemplate(
+                text_to_sql_tmpl,
+                prompt_type="text_to_sql"
+            )
+            
             query_engine = NLSQLTableQueryEngine(
                 sql_database=sql_database,
-                llm=llm
+                llm=llm,
+                text_to_sql_prompt=text_to_sql_prompt
             )
             return query_engine
         except Exception as e:
