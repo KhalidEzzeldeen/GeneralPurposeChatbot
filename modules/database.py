@@ -2,8 +2,79 @@ from sqlalchemy import create_engine, inspect
 import pandas as pd
 import os
 import threading
+import re
 from modules.config import ConfigManager
 from modules.knowledge_base import KnowledgeBase
+
+def validate_sql_query(sql_query: str) -> tuple[bool, str]:
+    """
+    Validate that a SQL query is safe to execute (read-only).
+    Returns (is_valid, error_message)
+    """
+    if not sql_query:
+        return False, "Empty SQL query"
+    
+    # Normalize the query (remove comments, extra whitespace)
+    sql_normalized = re.sub(r'--.*?\n', '\n', sql_query)  # Remove single-line comments
+    sql_normalized = re.sub(r'/\*.*?\*/', '', sql_normalized, flags=re.DOTALL)  # Remove multi-line comments
+    sql_normalized = sql_normalized.strip().upper()
+    
+    # List of forbidden SQL keywords (destructive operations)
+    forbidden_keywords = [
+        'DELETE', 'DROP', 'TRUNCATE', 'ALTER', 'CREATE', 'INSERT', 
+        'UPDATE', 'REPLACE', 'MERGE', 'EXEC', 'EXECUTE', 'CALL'
+    ]
+    
+    # Check if query starts with SELECT (required)
+    if not sql_normalized.startswith('SELECT'):
+        # Check if it's a WITH clause (CTE) that should lead to SELECT
+        if sql_normalized.startswith('WITH'):
+            # Check if SELECT appears after WITH
+            if 'SELECT' not in sql_normalized[:200]:  # Check first 200 chars
+                return False, "Query must be a SELECT statement. WITH clauses must contain SELECT."
+        else:
+            return False, "Query must be a SELECT statement (read-only). This system does not support data modification."
+    
+    # Check for forbidden keywords anywhere in the query
+    for keyword in forbidden_keywords:
+        # Use word boundaries to avoid false positives (e.g., "SELECTED" shouldn't match "SELECT")
+        pattern = r'\b' + re.escape(keyword) + r'\b'
+        if re.search(pattern, sql_normalized, re.IGNORECASE):
+            return False, f"Query contains forbidden keyword '{keyword}'. This system only supports SELECT queries (read-only operations)."
+    
+    return True, "Query is valid"
+
+
+class SafeSQLDatabase:
+    """
+    A wrapper around SQLDatabase that validates all SQL queries before execution.
+    Only allows SELECT queries (read-only operations).
+    """
+    def __init__(self, engine, include_tables=None):
+        from llama_index.core import SQLDatabase
+        self._sql_database = SQLDatabase(engine, include_tables=include_tables)
+        self._engine = engine
+        # Store original run_sql method
+        self._original_run_sql = self._sql_database.run_sql
+    
+    def run_sql(self, command: str):
+        """Execute SQL query with validation - only SELECT queries allowed."""
+        # Validate the SQL query before execution
+        is_valid, error_msg = validate_sql_query(command)
+        if not is_valid:
+            raise ValueError(
+                f"🚫 SQL Query Validation Failed: {error_msg}\n\n"
+                f"Generated query: {command}\n\n"
+                f"This system only supports SELECT queries (read-only operations). "
+                f"If you asked about 'removing', 'deleting', or 'updating', the system will "
+                f"interpret this as a request for information, not an action to perform."
+            )
+        # If valid, execute the query
+        return self._original_run_sql(command)
+    
+    def __getattr__(self, name):
+        """Delegate all other attributes to the underlying SQLDatabase."""
+        return getattr(self._sql_database, name)
 
 class DatabaseManager:
     _engine_cache = {}
@@ -235,14 +306,25 @@ class DatabaseManager:
             inspector = inspect(engine)
             table_names = inspector.get_table_names()
             
-            sql_database = SQLDatabase(engine, include_tables=table_names)
+            # Create a safe SQL database wrapper that validates queries
+            sql_database = SafeSQLDatabase(engine, include_tables=table_names)
             
             # Custom prompt that encourages semantic/fuzzy search
             text_to_sql_tmpl = (
                 "Given an input question, first create a syntactically correct {dialect} "
-                "query to run, then look at the results of the query and return the answer. "
+                "query to run, then look at the results of the query and return the answer. " 
                 "You can order the results by a relevant column to return the most "
                 "interesting examples in the database.\n\n"
+                "**CRITICAL SAFETY RULES - YOU MUST FOLLOW THESE:**\n"
+                "1. **ONLY generate SELECT queries** - This is a READ-ONLY system\n"
+                "2. **NEVER generate DELETE, UPDATE, INSERT, DROP, ALTER, TRUNCATE, or any data modification statements**\n"
+                "3. **NEVER generate DDL statements** (CREATE, DROP, ALTER TABLE, etc.)\n"
+                "4. If the user asks about 'removing', 'deleting', 'updating', or 'changing' data, interpret this as a request for INFORMATION about that data, not an action to perform\n"
+                "5. Examples:\n"
+                "   - User: 'Request to remove soil service' → Generate SELECT query to find information about soil removal services\n"
+                "   - User: 'Delete user X' → Generate SELECT query to find information about user X\n"
+                "   - User: 'Update service Y' → Generate SELECT query to find information about service Y\n"
+                "6. **ONLY use SELECT statements** - All queries must be read-only data retrieval\n\n"
                 "**IMPORTANT: For text searches, use semantic/fuzzy matching instead of exact matching:**\n"
                 "- Use ILIKE (case-insensitive) or LIKE with wildcards (%text%) for partial matches\n"
                 "- Use ILIKE '%search_term%' instead of = 'search_term' for text columns\n"
@@ -259,7 +341,7 @@ class DatabaseManager:
                 "Also, qualify column names with the table name when needed. "
                 "You are required to use the following format, each taking one line:\n\n"
                 "Question: Question here\n"
-                "SQLQuery: SQL Query to run\n"
+                "SQLQuery: SQL Query to run (MUST be a SELECT statement only)\n"
                 "SQLResult: Result of the SQLQuery\n"
                 "Answer: Final answer here\n\n"
                 "Only use tables listed below.\n"

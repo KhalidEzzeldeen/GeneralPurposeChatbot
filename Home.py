@@ -80,6 +80,203 @@ def get_sql_query_engine(_llm):
         return None
     return db_mgr.get_sql_query_engine(_llm)
 
+def is_context_dependent_query(prompt: str) -> bool:
+    """
+    Check if a query contains references that require conversation context.
+    Examples: "this service", "it", "that", "the above", "those", etc.
+    """
+    prompt_lower = prompt.lower()
+    context_indicators = [
+        "this ", "that ", "these ", "those ",
+        " it ", " its ", " it's ",
+        " the above", " the previous", " the mentioned",
+        " for this", " for that", " for it",
+        " of this", " of that", " of it",
+        " what are the steps", " how to", " tell me more",
+        " explain it", " describe it", " details about it"
+    ]
+    return any(indicator in prompt_lower for indicator in context_indicators)
+
+def resolve_context_references(prompt: str, conversation_history: list, llm) -> str:
+    """
+    Resolve context-dependent references in a query using conversation history.
+    For example: "what are the steps for this service" -> "what are the steps for Approval Engineering Drawings service"
+    
+    Returns the resolved query if context-dependent, otherwise returns the original prompt.
+    """
+    if not is_context_dependent_query(prompt):
+        return prompt
+    
+    if not conversation_history or len(conversation_history) < 3:
+        return prompt
+    
+    # Get recent conversation context (exclude current message which is the last one)
+    # We want the previous messages to understand what "this service" refers to
+    recent_history = conversation_history[-7:-1] if len(conversation_history) > 7 else conversation_history[:-1]
+    
+    # Need at least one previous exchange (user + assistant) to have context
+    if len(recent_history) < 2:
+        return prompt
+    
+    # Build context summary
+    context_parts = []
+    for msg in recent_history:
+        if isinstance(msg, dict):
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+        else:
+            role = msg.role if hasattr(msg, 'role') else ""
+            content = str(msg.content) if hasattr(msg, 'content') else str(msg)
+        
+        if role == "user":
+            context_parts.append(f"User: {content}")
+        elif role == "assistant":
+            # Extract key information from assistant responses (service names, entities, etc.)
+            context_parts.append(f"Assistant: {content[:200]}")  # First 200 chars to capture service names
+    
+    if not context_parts:
+        return prompt
+    
+    context = "\n".join(context_parts)
+    
+    # Use LLM to resolve references
+    resolution_prompt = f"""You are a context resolution assistant. Your job is to resolve references like "this service", "it", "that", etc. in the user's query by replacing them with the actual entities mentioned in the conversation context.
+
+Conversation context (previous messages):
+{context}
+
+User's current query: "{prompt}"
+
+Task: Replace any references (like "this service", "it", "that", "the above", etc.) in the user's query with the actual entities, services, or items mentioned in the conversation context.
+
+Rules:
+1. If the query says "this service" or "for this service", find the service name mentioned in the conversation context (usually in the Assistant's previous response or User's previous question)
+2. If the query says "it" or "that", find what it refers to from the context
+3. Keep the rest of the query exactly as is - only replace the reference words
+4. If you cannot determine what the reference refers to, return the original query unchanged
+5. Only replace references, don't change the query structure or meaning
+6. Be specific - if the context mentions "Approval Engineering Drawings service", replace "this service" with "Approval Engineering Drawings service"
+
+Examples:
+- Query: "what are the steps for this service" + Context mentions "Approval Engineering Drawings service" → "what are the steps for Approval Engineering Drawings service"
+- Query: "tell me more about it" + Context mentions "Contaminated soil removal" → "tell me more about Contaminated soil removal"
+
+Return ONLY the resolved query, nothing else. Do not add explanations or additional text.
+
+Resolved query:"""
+    
+    try:
+        response = llm.complete(resolution_prompt)
+        resolved = str(response).strip()
+        
+        # Clean up the response (remove quotes, extra text, etc.)
+        # Remove markdown code blocks if present
+        if "```" in resolved:
+            # Extract text between code blocks
+            parts = resolved.split("```")
+            if len(parts) > 1:
+                resolved = parts[1].strip()
+                if resolved.startswith("text") or resolved.startswith("plain"):
+                    resolved = resolved.split("\n", 1)[-1].strip()
+        
+        resolved = resolved.strip('"').strip("'").strip()
+        
+        # Remove any explanatory text that might come after the query
+        # Look for common patterns like "The resolved query is:" etc.
+        lines = resolved.split("\n")
+        if len(lines) > 1:
+            # Take the first line that looks like a query (has question words or is substantial)
+            for line in lines:
+                line = line.strip()
+                if line and (len(line) > 10 or any(word in line.lower() for word in ["what", "how", "tell", "show", "get", "find"])):
+                    resolved = line
+                    break
+        
+        # If the resolved query is too different or empty, use original
+        if not resolved or len(resolved) < len(prompt) * 0.5:
+            return prompt
+        
+        # If resolved query is the same as original, return it (might be correct if no references)
+        if resolved.lower() == prompt.lower():
+            return prompt
+        
+        return resolved
+    except Exception as e:
+        # If resolution fails, return original prompt
+        import logging
+        logging.warning(f"Context resolution failed: {str(e)}")
+        return prompt
+
+def get_conversation_context_hash(conversation_history: list, max_messages: int = 4) -> str:
+    """
+    Generate a hash of recent conversation context for cache key generation.
+    This ensures context-dependent queries use different cache keys based on conversation history.
+    """
+    if not conversation_history or len(conversation_history) < 3:
+        return ""
+    
+    # Get last few messages (excluding current) for context
+    recent = conversation_history[-max_messages-1:-1] if len(conversation_history) > max_messages+1 else conversation_history[:-1]
+    
+    # Extract key information from recent messages
+    context_texts = []
+    for msg in recent:
+        if isinstance(msg, dict):
+            content = msg.get("content", "")
+        else:
+            content = str(msg.content) if hasattr(msg, 'content') else str(msg)
+        # Extract first 50 chars of each message for context hash
+        if content:
+            context_texts.append(content[:50])
+    
+    if context_texts:
+        import hashlib
+        context_str = "|".join(context_texts)
+        return hashlib.md5(context_str.encode()).hexdigest()[:8]
+    return ""
+
+def build_context_aware_query(prompt: str, conversation_history: list) -> str:
+    """
+    Build a context-aware query by including relevant conversation history.
+    This helps the LLM understand references like "this service", "it", "that", etc.
+    """
+    if not conversation_history or len(conversation_history) < 3:
+        # No history or only current message, return prompt as-is
+        return prompt
+    
+    # Get the last few exchanges, excluding the current user message (last item)
+    # Get last 5 messages before current (2-3 Q&A pairs)
+    recent_history = conversation_history[-6:-1] if len(conversation_history) > 6 else conversation_history[:-1]
+    
+    # Build context from recent history (excluding current message)
+    context_parts = []
+    for msg in recent_history:
+        if isinstance(msg, dict):
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+        else:
+            role = msg.role if hasattr(msg, 'role') else ""
+            content = str(msg.content) if hasattr(msg, 'content') else str(msg)
+        
+        if role == "user":
+            context_parts.append(f"User: {content}")
+        elif role == "assistant":
+            context_parts.append(f"Assistant: {content}")
+    
+    # If we have context, prepend it to the query
+    if context_parts:
+        context = "\n".join(context_parts)
+        # Build enhanced query with context
+        enhanced_query = f"""Previous conversation context:
+{context}
+
+Current question: {prompt}
+
+Please answer the current question, using the conversation context to understand any references (like "this service", "it", "that", etc.). If the current question refers to something mentioned in the previous conversation, use that context to provide a relevant answer."""
+        return enhanced_query
+    
+    return prompt
+
 def main():
     st.title("🤖 ProBot: Enterprise Assistant")
     
@@ -146,9 +343,33 @@ def main():
     chat_engine = None
     if index:
         # --- Tool 1: Knowledge Base (RAG) ---
-        # Create a query engine from the index with optimized settings
-        # Reduced similarity_top_k from 5 to 3 for better performance
-        rag_query_engine = index.as_query_engine(similarity_top_k=3)
+        # Create a chat engine that maintains conversation state
+        # This is better than a simple query engine for context-aware conversations
+        from llama_index.core.chat_engine import CondenseQuestionChatEngine
+        from llama_index.core.memory import ChatMemoryBuffer
+        
+        # Create base query engine for the chat engine
+        base_query_engine = index.as_query_engine(similarity_top_k=3)
+        
+        # Create memory buffer for conversation history (will be updated dynamically)
+        history = [
+            ChatMessage(role=m["role"], content=m["content"]) 
+            for m in st.session_state.messages 
+            if m["role"] in ["user", "assistant"]
+        ]
+        memory = ChatMemoryBuffer.from_defaults(chat_history=history)
+        
+        # Create chat engine with conversation memory
+        # This will be used for context-dependent queries
+        rag_chat_engine = CondenseQuestionChatEngine.from_defaults(
+            query_engine=base_query_engine,
+            memory=memory,
+            llm=llm,
+            verbose=False
+        )
+        
+        # Also keep a simple query engine for non-conversational queries
+        rag_query_engine = base_query_engine
         
         rag_tool = QueryEngineTool(
             query_engine=rag_query_engine,
@@ -160,6 +381,9 @@ def main():
                 ),
             ),
         )
+        
+        # Store chat engine separately for context-aware queries
+        rag_chat_engine_for_context = rag_chat_engine
         
         tools = [rag_tool]
         
@@ -186,14 +410,6 @@ def main():
             )
             tools.append(sql_tool)
         
-        # History Injection
-        history = [
-            ChatMessage(role=m["role"], content=m["content"]) 
-            for m in st.session_state.messages 
-            if m["role"] in ["user", "assistant"]
-        ]
-        memory = ChatMemoryBuffer.from_defaults(chat_history=history)
-        
         # Enhanced intelligent router with LLM-based intent classification
         # Get cached database schema summary for better routing decisions (lazy load, only when SQL engine exists)
         schema_summary = None
@@ -216,9 +432,9 @@ def main():
         chat_engine = {
             "type": "enhanced_router",
             "llm": llm,
-            "rag_engine": rag_query_engine,
+            "rag_engine": rag_query_engine,  # Simple query engine for direct queries
+            "rag_chat_engine": rag_chat_engine_for_context,  # Chat engine for context-aware queries
             "sql_engine": sql_engine if sql_engine else None,
-            "memory": memory,
             "system_prompt": llm_conf["system_prompt"],
             "intent_classifier": intent_classifier
         }
@@ -230,13 +446,26 @@ def main():
 
     # User Input
     if prompt := st.chat_input("Ask about your data..."):
-        # Check Cache (skip if it's an error to avoid showing cached errors)
-        cached_resp = cache_mgr.get_cached_response(prompt)
+        # Get conversation history BEFORE adding current message
+        conversation_history = st.session_state.messages[-10:] if len(st.session_state.messages) > 10 else st.session_state.messages
+        
+        # Check if query is context-dependent
+        is_context_dependent = is_context_dependent_query(prompt)
+        
+        # Build context-aware cache key for context-dependent queries
+        cache_key = prompt
+        if is_context_dependent and conversation_history:
+            context_hash = get_conversation_context_hash(conversation_history)
+            if context_hash:
+                cache_key = f"{prompt}::ctx:{context_hash}"
+        
+        # Check Cache with context-aware key
+        cached_resp = cache_mgr.get_cached_response(cache_key)
         # Don't use cached error responses - clear them
         if cached_resp:
             if "Error" in cached_resp or "error" in cached_resp.lower() or "run_agent" in cached_resp:
                 # Clear the bad cached response
-                cache_mgr.set_cached_response(prompt, None)  # This will overwrite with None
+                cache_mgr.set_cached_response(cache_key, None)  # This will overwrite with None
                 cached_resp_to_use = None
             else:
                 cached_resp_to_use = cached_resp
@@ -247,6 +476,9 @@ def main():
         with st.chat_message("user"):
             st.markdown(prompt)
         session_mgr.append_message(st.session_state.session_id, "user", prompt)
+        
+        # Update conversation history to include current message
+        conversation_history = st.session_state.messages[-10:] if len(st.session_state.messages) > 10 else st.session_state.messages
 
         with st.chat_message("assistant"):
             if cached_resp_to_use:
@@ -260,15 +492,28 @@ def main():
                         try:
                             # Enhanced intelligent routing with LLM-based intent classification
                             if isinstance(chat_engine, dict) and chat_engine.get("type") in ["enhanced_router", "simple_router"]:
-                                # Get conversation history for context
-                                conversation_history = st.session_state.messages[-10:] if len(st.session_state.messages) > 10 else st.session_state.messages
+                                # STEP 1: Resolve context-dependent references BEFORE routing
+                                resolved_query = prompt
+                                if is_context_dependent:
+                                    # Debug: Show that we're attempting context resolution
+                                    st.info(f"🔍 Detected context-dependent query. Resolving references...")
+                                    resolved_query = resolve_context_references(
+                                        prompt, 
+                                        conversation_history, 
+                                        chat_engine["llm"]
+                                    )
+                                    if resolved_query != prompt:
+                                        st.success(f"✅ Resolved: \"{prompt}\" → \"{resolved_query}\"")
+                                    else:
+                                        st.warning(f"⚠️ Context resolution returned original query. May need more conversation history.")
                                 
-                                # Use LLM-based classification with schema understanding (primary method)
+                                # STEP 2: Use resolved query for intent classification
                                 intent_classification = None
                                 if chat_engine.get("type") == "enhanced_router" and chat_engine.get("intent_classifier"):
                                     try:
+                                        # Use resolved query for classification
                                         intent_classification = chat_engine["intent_classifier"].classify(
-                                            query=prompt,
+                                            query=resolved_query,  # Use resolved query instead of original
                                             conversation_history=conversation_history
                                         )
                                     except Exception as e:
@@ -278,7 +523,7 @@ def main():
                                 
                                 # Fallback to keyword-based if LLM classification failed or not available
                                 if not intent_classification:
-                                    intent_classification = classify_with_keywords(prompt)
+                                    intent_classification = classify_with_keywords(resolved_query)  # Use resolved query
                                 
                                 intent = intent_classification.get("intent", "knowledge_base")
                                 confidence = intent_classification.get("confidence", 0.5)
@@ -287,14 +532,24 @@ def main():
                                 # Show routing info for debugging
                                 st.info(f"🔀 Routing: {intent} (confidence: {confidence:.2f}) - {reasoning}")
                                 
+                                # Use resolved query for all subsequent operations
+                                query_to_use = resolved_query
+                                
                                 # Route based on intent
                                 if intent == "database":
                                     if not chat_engine["sql_engine"]:
                                         response_text = "⚠️ **Error:** Database connection not available. Please configure database in Settings."
                                         response = None
                                     else:
-                                        # Check cache first for SQL query results
-                                        cached_result = cache_mgr.get_cached_query_result(prompt, "sql")
+                                        # Build context-aware cache key for database queries
+                                        db_cache_key = query_to_use
+                                        if is_context_dependent and conversation_history:
+                                            context_hash = get_conversation_context_hash(conversation_history)
+                                            if context_hash:
+                                                db_cache_key = f"{query_to_use}::ctx:{context_hash}"
+                                        
+                                        # Check cache first for SQL query results (use resolved query)
+                                        cached_result = cache_mgr.get_cached_query_result(db_cache_key, "sql")
                                         if cached_result:
                                             # Check if cache entry is still valid (TTL)
                                             if time.time() - cached_result.get("timestamp", 0) < cached_result.get("ttl", 3600):
@@ -304,13 +559,19 @@ def main():
                                                 cached_result = None  # Expired
                                         
                                         if not cached_result:
-                                            # Route to SQL engine
+                                            # Route to SQL engine with resolved query
                                             try:
-                                                sql_response = chat_engine["sql_engine"].query(prompt)
+                                                sql_response = chat_engine["sql_engine"].query(query_to_use)  # Use resolved query
                                                 response_text = str(sql_response)
                                                 response = sql_response
-                                                # Cache the result
-                                                cache_mgr.set_cached_query_result(prompt, "sql", response_text, ttl=3600)
+                                                # Cache the result with context-aware key
+                                                cache_mgr.set_cached_query_result(db_cache_key, "sql", response_text, ttl=3600)
+                                            except ValueError as e:
+                                                # SQL validation error (unsafe query detected)
+                                                error_msg = str(e)
+                                                response_text = f"🚫 **SQL Safety Validation Failed:**\n\n{error_msg}\n\n*The system detected an unsafe SQL query. This system only supports SELECT queries (read-only operations). If you asked about 'removing', 'deleting', or 'updating', please rephrase your question to request information instead.*"
+                                                response = None
+                                                st.error("Unsafe SQL query detected and blocked")
                                             except Exception as e:
                                                 # Show detailed error for database queries
                                                 error_msg = str(e)
@@ -321,50 +582,107 @@ def main():
                                 elif intent == "both" and chat_engine["sql_engine"]:
                                     # Try both tools in parallel for better performance
                                     try:
+                                        # Use chat engine for context-dependent RAG queries
+                                        if is_context_dependent and chat_engine.get("rag_chat_engine"):
+                                            chat_history = [
+                                                ChatMessage(role=m["role"], content=m["content"]) 
+                                                for m in conversation_history 
+                                                if m["role"] in ["user", "assistant"]
+                                            ]
+                                            chat_engine["rag_chat_engine"]._memory.set(chat_history)
+                                            rag_query_func = lambda q: chat_engine["rag_chat_engine"].chat(q)
+                                        else:
+                                            rag_query_func = lambda q: chat_engine["rag_engine"].query(q)
+                                        
                                         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                                            # Submit both queries in parallel
-                                            sql_future = executor.submit(chat_engine["sql_engine"].query, prompt)
-                                            rag_future = executor.submit(chat_engine["rag_engine"].query, prompt)
+                                            # Submit both queries in parallel with resolved query
+                                            sql_future = executor.submit(chat_engine["sql_engine"].query, query_to_use)
+                                            rag_future = executor.submit(rag_query_func, query_to_use)
                                             
                                             # Wait for both to complete
                                             sql_response = sql_future.result(timeout=30)
-                                            rag_response = rag_future.result(timeout=30)
+                                            rag_result = rag_future.result(timeout=30)
                                             
                                             sql_text = str(sql_response)
-                                            rag_text = str(rag_response)
+                                            # Handle both chat response and query response
+                                            if hasattr(rag_result, 'response'):
+                                                rag_text = str(rag_result.response)
+                                                rag_response = rag_result
+                                            else:
+                                                rag_text = str(rag_result)
+                                                rag_response = rag_result
                                             
                                             # Combine results
                                             response_text = f"**Database Results:**\n{sql_text}\n\n**Knowledge Base Information:**\n{rag_text}"
                                             response = rag_response  # Use RAG response for source_nodes
                                             
-                                            # Cache both results
-                                            cache_mgr.set_cached_query_result(prompt, "sql", sql_text, ttl=3600)
-                                            cache_mgr.set_cached_query_result(prompt, "rag", rag_text, ttl=3600)
+                                            # Cache both results with resolved query
+                                            cache_mgr.set_cached_query_result(query_to_use, "sql", sql_text, ttl=3600)
+                                            cache_mgr.set_cached_query_result(query_to_use, "rag", rag_text, ttl=3600)
                                     except concurrent.futures.TimeoutError:
                                         st.warning("Query timeout, trying sequentially...")
                                         # Fallback to sequential if parallel fails
                                         try:
-                                            sql_response = chat_engine["sql_engine"].query(prompt)
+                                            sql_response = chat_engine["sql_engine"].query(query_to_use)  # Use resolved query
                                             sql_text = str(sql_response)
-                                            rag_response = chat_engine["rag_engine"].query(prompt)
-                                            rag_text = str(rag_response)
+                                            # Use appropriate RAG engine based on context
+                                            if is_context_dependent and chat_engine.get("rag_chat_engine"):
+                                                chat_history = [
+                                                    ChatMessage(role=m["role"], content=m["content"]) 
+                                                    for m in conversation_history[:-1]  # Exclude current message
+                                                    if m["role"] in ["user", "assistant"]
+                                                ]
+                                                chat_engine["rag_chat_engine"]._memory.set(chat_history)
+                                                chat_result = chat_engine["rag_chat_engine"].chat(query_to_use)  # Use resolved query
+                                                rag_text = str(chat_result)
+                                                rag_response = chat_result if hasattr(chat_result, 'source_nodes') else None
+                                            else:
+                                                rag_response = chat_engine["rag_engine"].query(query_to_use)  # Use resolved query
+                                                rag_text = str(rag_response)
                                             response_text = f"**Database Results:**\n{sql_text}\n\n**Knowledge Base Information:**\n{rag_text}"
                                             response = rag_response
                                         except Exception:
                                             # If both fail, try just RAG
-                                            rag_response = chat_engine["rag_engine"].query(prompt)
+                                            if is_context_dependent and chat_engine.get("rag_chat_engine"):
+                                                chat_history = [
+                                                    ChatMessage(role=m["role"], content=m["content"]) 
+                                                    for m in conversation_history[:-1]  # Exclude current message
+                                                    if m["role"] in ["user", "assistant"]
+                                                ]
+                                                chat_engine["rag_chat_engine"]._memory.set(chat_history)
+                                                rag_response = chat_engine["rag_chat_engine"].chat(query_to_use)  # Use resolved query
+                                            else:
+                                                rag_response = chat_engine["rag_engine"].query(query_to_use)  # Use resolved query
                                             response_text = str(rag_response)
                                             response = rag_response
                                     except Exception as sql_error:
                                         # If SQL fails, just use RAG
-                                        rag_response = chat_engine["rag_engine"].query(prompt)
-                                        response_text = str(rag_response)
-                                        response = rag_response
+                                        if is_context_dependent and chat_engine.get("rag_chat_engine"):
+                                            chat_history = [
+                                                ChatMessage(role=m["role"], content=m["content"]) 
+                                                for m in conversation_history[:-1]  # Exclude current message
+                                                if m["role"] in ["user", "assistant"]
+                                            ]
+                                            chat_engine["rag_chat_engine"]._memory.set(chat_history)
+                                            chat_result = chat_engine["rag_chat_engine"].chat(query_to_use)  # Use resolved query
+                                            response_text = str(chat_result)
+                                            response = chat_result if hasattr(chat_result, 'source_nodes') else None
+                                        else:
+                                            rag_response = chat_engine["rag_engine"].query(query_to_use)  # Use resolved query
+                                            response_text = str(rag_response)
+                                            response = rag_response
                                         
                                 else:
                                     # Default to RAG engine (knowledge base)
+                                    # Build context-aware cache key using resolved query
+                                    rag_cache_key = query_to_use
+                                    if is_context_dependent and conversation_history:
+                                        context_hash = get_conversation_context_hash(conversation_history)
+                                        if context_hash:
+                                            rag_cache_key = f"{query_to_use}::ctx:{context_hash}"
+                                    
                                     # Check cache first for RAG query results
-                                    cached_result = cache_mgr.get_cached_query_result(prompt, "rag")
+                                    cached_result = cache_mgr.get_cached_query_result(rag_cache_key, "rag")
                                     if cached_result:
                                         if time.time() - cached_result.get("timestamp", 0) < cached_result.get("ttl", 3600):
                                             response_text = cached_result["result"] + " *(cached)*"
@@ -373,17 +691,37 @@ def main():
                                             cached_result = None
                                     
                                     if not cached_result:
-                                        # Use streaming for RAG responses (better UX)
-                                        rag_response = chat_engine["rag_engine"].query(prompt)
-                                        response_text = str(rag_response)
-                                        response = rag_response
-                                        # Cache the result
-                                        cache_mgr.set_cached_query_result(prompt, "rag", response_text, ttl=3600)
+                                        # Use chat engine for context-dependent queries, simple engine for direct queries
+                                        if is_context_dependent and chat_engine.get("rag_chat_engine"):
+                                            # Update chat engine memory with latest conversation history (excluding current)
+                                            chat_history = [
+                                                ChatMessage(role=m["role"], content=m["content"]) 
+                                                for m in conversation_history[:-1]  # Exclude current message
+                                                if m["role"] in ["user", "assistant"]
+                                            ]
+                                            chat_engine["rag_chat_engine"]._memory.set(chat_history)
+                                            # Use chat engine with resolved query (chat engine will add current message to memory)
+                                            chat_response = chat_engine["rag_chat_engine"].chat(query_to_use)  # Use resolved query
+                                            response_text = str(chat_response)
+                                            # Extract source nodes if available
+                                            if hasattr(chat_response, 'source_nodes'):
+                                                response = chat_response
+                                            else:
+                                                # Create a mock response object for compatibility
+                                                from llama_index.core.schema import Response
+                                                response = Response(response_text)
+                                        else:
+                                            # Use simple query engine for direct queries with resolved query
+                                            rag_response = chat_engine["rag_engine"].query(query_to_use)  # Use resolved query
+                                            response_text = str(rag_response)
+                                            response = rag_response
+                                        # Cache the result with context-aware key
+                                        cache_mgr.set_cached_query_result(rag_cache_key, "rag", response_text, ttl=3600)
                                     
                                     # If RAG doesn't give good results and we have SQL, try SQL as fallback
                                     if len(response_text) < 50 and chat_engine["sql_engine"] and intent != "database":
                                         try:
-                                            sql_response = chat_engine["sql_engine"].query(prompt)
+                                            sql_response = chat_engine["sql_engine"].query(query_to_use)  # Use resolved query
                                             if sql_response and len(str(sql_response)) > len(response_text):
                                                 response_text = f"**Database Result:**\n{str(sql_response)}"
                                                 response = sql_response
@@ -402,7 +740,33 @@ def main():
                                 st.warning("Agent unavailable, using direct query engine...")
                                 if index:
                                     rag_engine = index.as_query_engine(similarity_top_k=5)
-                                    response = rag_engine.query(prompt)
+                                    # Resolve context if needed for fallback
+                                    fallback_query = prompt
+                                    if is_context_dependent:
+                                        fallback_query = resolve_context_references(
+                                            prompt, 
+                                            conversation_history, 
+                                            llm
+                                        )
+                                    # Use chat engine if context-dependent, otherwise simple query
+                                    if is_context_dependent:
+                                        from llama_index.core.chat_engine import CondenseQuestionChatEngine
+                                        from llama_index.core.memory import ChatMemoryBuffer
+                                        chat_history = [
+                                            ChatMessage(role=m["role"], content=m["content"]) 
+                                            for m in conversation_history 
+                                            if m["role"] in ["user", "assistant"]
+                                        ]
+                                        memory = ChatMemoryBuffer.from_defaults(chat_history=chat_history)
+                                        fallback_chat_engine = CondenseQuestionChatEngine.from_defaults(
+                                            query_engine=rag_engine,
+                                            memory=memory,
+                                            llm=llm,
+                                            verbose=False
+                                        )
+                                        response = fallback_chat_engine.chat(fallback_query)  # Use resolved query
+                                    else:
+                                        response = rag_engine.query(fallback_query)  # Use resolved query
                                     response_text = str(response)
                                 else:
                                     response_text = f"⚠️ **Error:** {str(e)}"
@@ -436,7 +800,8 @@ def main():
                         
                     st.markdown(response_text)
                     if chat_engine: # Only cache if real answer
-                        cache_mgr.set_cached_response(prompt, response_text)
+                        # Use context-aware cache key
+                        cache_mgr.set_cached_response(cache_key, response_text)
 
         st.session_state.messages.append({"role": "assistant", "content": response_text})
         session_mgr.append_message(st.session_state.session_id, "assistant", response_text)

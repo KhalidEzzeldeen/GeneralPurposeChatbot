@@ -40,22 +40,35 @@ Available tools:
 
 {schema_context}
 
+IMPORTANT: The sample data shown above is ONLY for understanding what TYPE of data the table contains, NOT for exact matching. The sample data illustrates the table's purpose and domain, but the table may contain many more records than what's shown in the samples.
+
 Classification logic:
-1. **First, check if the query is about data in the database:**
-   - Look at the sample data in the schema above
-   - If the user's query mentions entities, services, records, or data that matches what's in the sample data → route to **database**
-   - Examples: If schema shows "publicservices" table with service names, and user asks about a service → **database**
-   - Examples: If schema shows "sales" table with property data, and user asks about properties → **database**
+1. **First, determine the table's purpose/domain from the schema:**
+   - Look at the table name, column names, and sample data to understand what TYPE of data the table stores
+   - Example: If "publicservices" table has columns like "service_name_english", "steps_arabic", and samples show municipal services → this table stores municipal services
+   - Example: If "sales" table has columns like "property_id", "price", and samples show property sales → this table stores property sales data
+   - **DO NOT** check if the specific entity in the query appears in the sample data - samples are just examples!
 
-2. **Then check if it's about documents/policies:**
-   - Questions about "what is", "explain", "tell me about" policies, procedures, documents → **knowledge_base**
-   - General informational questions not about specific data records → **knowledge_base**
+2. **Then, check if the user's query matches the table's purpose/domain:**
+   - If the user asks about something that matches the table's purpose/domain → route to **database**
+   - Example: User asks "Approval Engineering Drawings service" and table stores municipal services → route to **database** (even if "Approval Engineering Drawings" is not in samples)
+   - Example: User asks "Parking Subscription steps" and table stores municipal services → route to **database** (even if not in samples)
+   - Example: User asks about a property sale and table stores property sales → route to **database**
+   - **Key principle**: Match by domain/purpose, NOT by exact presence in sample data
 
-3. **Special cases:**
+3. **Check if it's about documents/policies:**
+   - Questions about "what is", "explain", "tell me about" general policies, procedures, or concepts → **knowledge_base**
+   - Questions asking for specific data records, entities, or structured information that matches a table's domain → **database**
+   - If the query is about a concept/explanation AND there's no matching table domain → **knowledge_base**
+
+4. **Special cases:**
    - Questions that need both structured data AND document context → **both**
-   - If the query could be answered by either, prefer **database** if it matches sample data, otherwise **knowledge_base**
+   - If the query could be answered by either, prefer **database** if it matches a table's domain, otherwise **knowledge_base**
 
-Key insight: The user doesn't know where the information is stored. Your job is to understand what they're asking about and match it to the available data sources based on the schema and sample data shown above.
+Key insight: The user doesn't know where the information is stored. Your job is to understand:
+1. What TYPE of data each table stores (from table name, columns, and sample data patterns)
+2. Whether the user's query is asking about that TYPE of data
+3. Route to database if there's a domain match, regardless of whether the specific entity appears in samples
 
 User query: "{query}"
 
@@ -63,7 +76,7 @@ Respond with ONLY a JSON object in this exact format:
 {{
     "intent": "knowledge_base" | "database" | "both" | "unknown",
     "confidence": 0.0-1.0,
-    "reasoning": "brief explanation of why this intent was chosen, referencing schema data if relevant"
+    "reasoning": "brief explanation of why this intent was chosen, focusing on table purpose/domain match rather than sample data presence"
 }}"""
         
         self.classification_prompt_template = base_prompt
@@ -100,39 +113,43 @@ Respond with ONLY a JSON object in this exact format:
             schema_context = f"""Database Schema Information:
 {self.schema_summary}
 
-IMPORTANT: Use this schema to intelligently determine if the user's query is asking about data that exists in the database.
+CRITICAL: The sample data and distinct values shown above are ONLY examples to help you understand what TYPE of data each table stores. They are NOT a complete list of what exists in the database. The table may contain many more records than what's shown.
 
 Analysis process:
-1. Understand what each table contains by examining:
-   - The table description (what kind of data it stores)
-   - Column names (what information is tracked)
-   - Sample values shown (examples of actual content)
-   - The DISTINCT values listed (variety of content in the table)
+1. **Understand each table's purpose/domain** (NOT what specific records exist):
+   - Look at the table name to understand its general purpose
+   - Examine column names to see what information is tracked
+   - Review sample data to understand the TYPE/CATEGORY of data (e.g., "municipal services", "property sales", "user accounts")
+   - The DISTINCT values show variety, but again, these are just examples of the data TYPE
 
-2. Check if the user's query is asking about:
-   - Information that matches the table's purpose/description
-   - Data that would logically be in these tables based on their structure
-   - Content similar to the sample values shown (even if not exact match)
-   - Any table names, column names, or data types
+2. **Match query to table purpose/domain** (NOT to specific sample records):
+   - If the user's query is about something that matches the table's purpose/domain → route to **database**
+   - Example: If "publicservices" table stores municipal services, and user asks about ANY municipal service → route to database (regardless of whether that specific service appears in samples)
+   - Example: If "sales" table stores property sales, and user asks about ANY property sale → route to database
+   - **DO NOT** check if the specific entity in the query appears in the sample data - that's not the purpose of samples!
 
-3. Key insight: If a query is about a topic/entity that the table is designed to store, route to database.
-   - Example: "publicservices" table contains various municipal services. If user asks about ANY service (e.g., "Parking Subscription", "Drainage Suction", etc.), even if not in sample data, it's likely in this table → route to database.
-   - Example: "sales" table contains property sales data. If user asks about properties, sales, locations, etc. → route to database.
+3. **Key principle**: 
+   - Sample data = Examples of data TYPE/purpose
+   - Your job = Match query to data TYPE/purpose, not to specific sample records
+   - If query matches table's domain → route to database (even if specific entity not in samples)
 
-4. Only route to knowledge_base if:
-   - Query is about general policies, procedures, or documents
-   - Query is about information clearly NOT in the database tables
+4. **Only route to knowledge_base if:**
+   - Query is about general policies, procedures, or documents (not specific data records)
+   - Query is about information clearly NOT matching any table's domain
    - Query is asking "what is" or "explain" about concepts, not data retrieval
 
-Example 1: User asks "Parking Subscription steps"
-- Schema shows "publicservices" table contains various municipal services with steps_english column
-- Even if "Parking Subscription" not in sample, the table is designed for services → route to database ✅
+Example 1: User asks "Approval Engineering Drawings service steps"
+- Schema shows "publicservices" table stores municipal services (from table name, columns like service_name_english, steps_arabic, and sample data showing services)
+- "Approval Engineering Drawings" is a municipal service → matches table's domain
+- Route to database ✅ (even if "Approval Engineering Drawings" not in sample data)
 
-Example 2: User asks "Drainage Suction"
-- Schema shows "publicservices" table has service_name_english with "Request for Drainage Suction" → route to database ✅
+Example 2: User asks "Parking Subscription steps"
+- Schema shows "publicservices" table stores municipal services
+- "Parking Subscription" is a municipal service → matches table's domain
+- Route to database ✅ (regardless of sample data)
 
 Example 3: User asks "What is the company policy on remote work?"
-- No table contains policies → route to knowledge_base ✅"""
+- No table's domain matches "company policies" → route to knowledge_base ✅"""
         else:
             schema_context = "No database schema information available. Use keyword-based classification."
         
