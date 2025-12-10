@@ -10,7 +10,7 @@ st.title("⚙️ System Configuration")
 config = ConfigManager()
 kb = KnowledgeBase()
 
-tab1, tab2, tab3 = st.tabs(["🤖 LLM Settings", "📚 Knowledge Base", "🗄️ Database Connection"])
+tab1, tab2, tab3, tab4 = st.tabs(["🤖 LLM Settings", "📚 Knowledge Base", "🗄️ Database Connection", "🔀 Routing Configuration"])
 
 # --- TAB 1: LLM Settings ---
 with tab1:
@@ -224,3 +224,118 @@ with tab3:
                 # Clear caches to force refresh
                 st.cache_resource.clear()
                 st.cache_data.clear()  # Clear schema summary cache
+
+# --- TAB 4: Routing Configuration ---
+with tab4:
+    st.header("Query Routing Configuration")
+    st.caption("Control how queries are routed between Knowledge Base (RAG) and Database (SQL)")
+    
+    current_routing = config.get("routing")
+    current_mode = current_routing.get("mode", "auto") if current_routing else "auto"
+    
+    st.subheader("Routing Mode")
+    
+    routing_options = {
+        "auto": {
+            "label": "🤖 Auto (System Decision)",
+            "description": "Let the system intelligently decide based on query intent. Uses LLM-based classification to route queries to the most appropriate source.",
+            "value": "auto"
+        },
+        "database": {
+            "label": "🗄️ Database Only (SQL)",
+            "description": "Always route all queries to the database (SQL). Use this when you want all queries to be answered from structured database data only.",
+            "value": "database"
+        },
+        "knowledge_base": {
+            "label": "📚 Knowledge Base Only (RAG)",
+            "description": "Always route all queries to the knowledge base (RAG). Use this when you want all queries to be answered from uploaded documents only.",
+            "value": "knowledge_base"
+        },
+        "both": {
+            "label": "🔄 Both (Parallel)",
+            "description": "Always execute queries on both database and knowledge base in parallel, then combine results. Use this when you want comprehensive answers from both sources.",
+            "value": "both"
+        }
+    }
+    
+    # Display routing mode selector with descriptions
+    selected_mode = st.radio(
+        "Select Routing Mode",
+        options=list(routing_options.keys()),
+        index=list(routing_options.keys()).index(current_mode) if current_mode in routing_options else 0,
+        format_func=lambda x: routing_options[x]["label"],
+        help="Choose how queries should be routed in the system"
+    )
+    
+    # Show description for selected mode
+    st.info(f"**{routing_options[selected_mode]['label']}**\n\n{routing_options[selected_mode]['description']}")
+    
+    # Warning messages based on selection
+    if selected_mode == "database":
+        if not config.get("database", {}).get("host"):
+            st.warning("⚠️ Database connection is not configured. Please configure it in the 'Database Connection' tab first.")
+    elif selected_mode == "knowledge_base":
+        files = kb.get_ingested_files()
+        if not files:
+            st.warning("⚠️ Knowledge base is empty. Please upload files in the 'Knowledge Base' tab first.")
+    elif selected_mode == "both":
+        if not config.get("database", {}).get("host"):
+            st.warning("⚠️ Database connection is not configured. Both routes require database to be set up.")
+        files = kb.get_ingested_files()
+        if not files:
+            st.warning("⚠️ Knowledge base is empty. Both routes require files to be uploaded.")
+    
+    st.markdown("---")
+    st.subheader("Current Status")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        # Database status
+        db_configured = bool(config.get("database", {}).get("host"))
+        if db_configured:
+            st.success("✅ Database: Configured")
+        else:
+            st.error("❌ Database: Not Configured")
+    
+    with col2:
+        # Knowledge base status
+        files = kb.get_ingested_files()
+        if files:
+            st.success(f"✅ Knowledge Base: {len(files)} file(s) ingested")
+        else:
+            st.error("❌ Knowledge Base: Empty")
+    
+    st.markdown("---")
+    st.subheader("SQL Debug Display")
+    st.caption("Show SQL queries and raw database results in chat responses")
+    
+    current_debug = config.get("debug")
+    current_show_sql = current_debug.get("show_sql_debug", False) if current_debug else False
+    
+    show_sql_debug = st.checkbox(
+        "Enable SQL Debug Display",
+        value=current_show_sql,
+        help="When enabled, SQL queries and raw database results will be shown in an expandable section in chat responses"
+    )
+    
+    if show_sql_debug:
+        st.info("ℹ️ SQL queries and raw results will be displayed in chat responses when database queries are executed.")
+    else:
+        st.caption("SQL debug information will be hidden from chat responses.")
+    
+    # Save button
+    if st.button("💾 Save Routing Configuration", type="primary"):
+        if not config.get("routing"):
+            config.set("routing", "mode", selected_mode)
+        else:
+            config.set("routing", "mode", selected_mode)
+        
+        # Save SQL debug setting
+        if not config.get("debug"):
+            config.set("debug", "show_sql_debug", show_sql_debug)
+        else:
+            config.set("debug", "show_sql_debug", show_sql_debug)
+        
+        st.success("✅ Routing configuration saved successfully!")
+        st.info("🔄 The new routing mode will be applied to all new queries.")
+        st.cache_resource.clear()  # Clear cache to ensure new routing is used

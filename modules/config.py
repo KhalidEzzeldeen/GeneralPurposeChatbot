@@ -16,6 +16,12 @@ DEFAULT_CONFIG = {
         "password": "npg_uZBXKw9eyt5h",
         "dbname": "neondb"
     },
+    "routing": {
+        "mode": "auto"
+    },
+    "debug": {
+        "show_sql_debug": False
+    },
     "data_path": "./data",
     "chroma_path": "./chroma_db",
     "ingested_files": []

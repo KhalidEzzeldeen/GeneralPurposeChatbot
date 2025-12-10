@@ -58,6 +58,14 @@ MODEL_REGISTRY = {
         "quality": "Very High",
         "description": "Higher quality but slower. Best for complex tasks.",
         "recommended": False
+    },
+    "datagpt-sql": {
+        "name": "DataGPT SQL",
+        "size": "Unknown",
+        "speed": "Medium",
+        "quality": "Very High",
+        "description": "Specialized model optimized for SQL query generation and database interactions. Excellent for database-related queries.",
+        "recommended": True
     }
 }
 

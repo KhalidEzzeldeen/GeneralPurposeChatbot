@@ -277,6 +277,77 @@ Please answer the current question, using the conversation context to understand
     
     return prompt
 
+def display_sql_debug_info(sql_response, response_text_container=None):
+    """
+    Display SQL debug information (query and raw results) in an expandable section.
+    
+    Args:
+        sql_response: The SQL response object from the query engine
+        response_text_container: Optional container to display in (for better placement)
+    """
+    if not sql_response:
+        return
+    
+    config = ConfigManager()
+    debug_config = config.get("debug")
+    show_sql_debug = debug_config.get("show_sql_debug", False) if debug_config else False
+    
+    if not show_sql_debug:
+        return
+    
+    # Get metadata from SQL response
+    metadata = {}
+    if hasattr(sql_response, 'metadata'):
+        metadata = sql_response.metadata
+    elif isinstance(sql_response, dict):
+        metadata = sql_response
+    
+    sql_query = metadata.get("sql_query")
+    
+    if sql_query:
+        # Get raw results from metadata
+        raw_results = metadata.get("result")
+        col_keys = metadata.get("col_keys", [])
+        
+        container = response_text_container if response_text_container else st
+        with container.expander("🔍 SQL Debug Information", expanded=False):
+            st.subheader("Generated SQL Query")
+            st.code(sql_query, language="sql")
+            
+            if raw_results is not None:
+                st.subheader("Raw Database Results")
+                if isinstance(raw_results, list) and len(raw_results) > 0:
+                    # Format as table if we have column keys
+                    if col_keys and len(col_keys) > 0:
+                        import pandas as pd
+                        try:
+                            # Convert to DataFrame for better display
+                            df = pd.DataFrame(raw_results, columns=col_keys)
+                            # Limit rows shown (first 50 rows)
+                            display_df = df.head(50)
+                            st.dataframe(display_df, width='stretch')
+                            if len(df) > 50:
+                                st.caption(f"Showing first 50 of {len(df)} rows")
+                        except Exception:
+                            # Fallback to text display
+                            st.text(str(raw_results[:500]))  # First 500 chars
+                            if len(str(raw_results)) > 500:
+                                st.caption("(Truncated - showing first 500 characters)")
+                    else:
+                        # No column keys, show as text
+                        results_str = str(raw_results)
+                        st.text(results_str[:1000])  # First 1000 chars
+                        if len(results_str) > 1000:
+                            st.caption("(Truncated - showing first 1000 characters)")
+                else:
+                    st.info("No results returned from database query.")
+            else:
+                st.info("Raw results not available in response metadata.")
+            
+            # Show metadata keys for debugging
+            if st.checkbox("Show all metadata keys", key=f"show_metadata_keys_{hash(str(sql_query))}"):
+                st.json(metadata)
+
 def main():
     st.title("🤖 ProBot: Enterprise Assistant")
     
@@ -489,6 +560,7 @@ def main():
                     if chat_engine:
                         response = None
                         response_text = ""
+                        sql_response_for_debug = None  # Initialize for SQL debug display
                         try:
                             # Enhanced intelligent routing with LLM-based intent classification
                             if isinstance(chat_engine, dict) and chat_engine.get("type") in ["enhanced_router", "simple_router"]:
@@ -529,6 +601,18 @@ def main():
                                 confidence = intent_classification.get("confidence", 0.5)
                                 reasoning = intent_classification.get("reasoning", "")
                                 
+                                # Check admin routing preference (override intent if set)
+                                routing_config = config.get("routing")
+                                routing_mode = routing_config.get("mode", "auto") if routing_config else "auto"
+                                
+                                if routing_mode != "auto":
+                                    # Admin has set a specific routing mode - override intent
+                                    original_intent = intent
+                                    intent = routing_mode
+                                    reasoning = f"Admin routing mode: {routing_mode} (overridden from {original_intent})"
+                                    confidence = 1.0  # Full confidence when admin sets routing
+                                    st.info(f"⚙️ **Admin Override:** Routing set to '{routing_mode}' mode")
+                                
                                 # Show routing info for debugging
                                 st.info(f"🔀 Routing: {intent} (confidence: {confidence:.2f}) - {reasoning}")
                                 
@@ -564,6 +648,8 @@ def main():
                                                 sql_response = chat_engine["sql_engine"].query(query_to_use)  # Use resolved query
                                                 response_text = str(sql_response)
                                                 response = sql_response
+                                                # Store SQL response for debug display
+                                                sql_response_for_debug = sql_response
                                                 # Cache the result with context-aware key
                                                 cache_mgr.set_cached_query_result(db_cache_key, "sql", response_text, ttl=3600)
                                             except ValueError as e:
@@ -616,6 +702,9 @@ def main():
                                             response_text = f"**Database Results:**\n{sql_text}\n\n**Knowledge Base Information:**\n{rag_text}"
                                             response = rag_response  # Use RAG response for source_nodes
                                             
+                                            # Store SQL response for debug display
+                                            sql_response_for_debug = sql_response
+                                            
                                             # Cache both results with resolved query
                                             cache_mgr.set_cached_query_result(query_to_use, "sql", sql_text, ttl=3600)
                                             cache_mgr.set_cached_query_result(query_to_use, "rag", rag_text, ttl=3600)
@@ -641,6 +730,8 @@ def main():
                                                 rag_text = str(rag_response)
                                             response_text = f"**Database Results:**\n{sql_text}\n\n**Knowledge Base Information:**\n{rag_text}"
                                             response = rag_response
+                                            # Store SQL response for debug display
+                                            sql_response_for_debug = sql_response
                                         except Exception:
                                             # If both fail, try just RAG
                                             if is_context_dependent and chat_engine.get("rag_chat_engine"):
@@ -725,6 +816,8 @@ def main():
                                             if sql_response and len(str(sql_response)) > len(response_text):
                                                 response_text = f"**Database Result:**\n{str(sql_response)}"
                                                 response = sql_response
+                                                # Store SQL response for debug display
+                                                sql_response_for_debug = sql_response
                                         except:
                                             pass  # Keep RAG response
                                     
@@ -774,6 +867,16 @@ def main():
                             else:
                                 response_text = f"⚠️ **Error talking to AI Service:** {str(e)}\n\n*Tip: Check if Ollama is running and healthy.*"
                                 response = None
+                        
+                        # --- SQL Debug Display (if enabled) ---
+                        # Check if we have a stored SQL response for debug (from "both" route or fallback)
+                        if 'sql_response_for_debug' in locals() and sql_response_for_debug:
+                            display_sql_debug_info(sql_response_for_debug)
+                        # Also check if the main response is a SQL response
+                        elif response and hasattr(response, 'metadata'):
+                            metadata = response.metadata if hasattr(response, 'metadata') else {}
+                            if metadata.get("sql_query"):
+                                display_sql_debug_info(response)
                         
                         # --- Source Citations & Media Player ---
                         if response and hasattr(response, 'source_nodes') and response.source_nodes:
